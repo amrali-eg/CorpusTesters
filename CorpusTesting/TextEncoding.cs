@@ -1,8 +1,8 @@
-﻿using System.Text;
+using System.Text;
 using System.Buffers;
 using UtfUnknown;
 
-namespace UnicodeSuiteTester;
+namespace CorpusTesting;
 
 /// <summary>
 /// Orchestrates character-encoding detection for files, streams, and byte buffers.
@@ -14,7 +14,7 @@ namespace UnicodeSuiteTester;
 /// independently verified using strict decoding and text validation before
 /// being accepted.
 /// </summary>
-internal static class TextEncoding
+public static class TextEncoding
 {
     //
     // Maximum number of bytes sampled for encoding detection.
@@ -47,7 +47,7 @@ internal static class TextEncoding
     /// The detected <see cref="Encoding"/>, or <see langword="null"/> if
     /// the encoding could not be detected.
     /// </returns>
-    internal static Encoding? DetectFromFile(
+    public static Encoding? DetectFromFile(
         string filePath,
         int maxSampleBytes = DefaultMaxSampleBytes)
     {
@@ -85,7 +85,7 @@ internal static class TextEncoding
     /// The detected <see cref="Encoding"/>, or <see langword="null"/> if
     /// the encoding could not be detected.
     /// </returns>
-    internal static Encoding? DetectFromStream(
+    public static Encoding? DetectFromStream(
         Stream stream,
         int maxSampleBytes = DefaultMaxSampleBytes)
     {
@@ -153,7 +153,7 @@ internal static class TextEncoding
     /// The detected <see cref="Encoding"/>, or <see langword="null"/> if
     /// the encoding could not be detected.
     /// </returns>
-    internal static Encoding? DetectFromBuffer(
+    public static Encoding? DetectFromBuffer(
         ReadOnlySpan<byte> buffer,
         int maxSampleBytes = DefaultMaxSampleBytes)
     {

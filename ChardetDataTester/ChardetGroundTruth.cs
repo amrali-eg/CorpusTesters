@@ -1,4 +1,4 @@
-using UnicodeSuiteTester;
+using CorpusTesting;
 
 namespace ChardetDataTester;
 

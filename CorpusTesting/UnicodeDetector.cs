@@ -1,6 +1,6 @@
 using System.Text;
 
-namespace UnicodeSuiteTester;
+namespace CorpusTesting;
 
 /// <summary>
 /// Detects UTF-8, UTF-16, and UTF-32 encodings with or without a BOM.

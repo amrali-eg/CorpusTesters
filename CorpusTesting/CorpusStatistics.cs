@@ -1,61 +1,61 @@
-namespace UnicodeSuiteTester;
+namespace CorpusTesting;
 
-internal enum MismatchType
+public enum MismatchType
 {
     FalsePositive,
     FalseNegative,
     Misclassified,
 }
 
-internal readonly record struct MismatchRecord(
+public readonly record struct MismatchRecord(
     string RelativePath,
     UnicodeClass Expected,
     string ExpectedToken,
     UnicodeClass Actual,
     MismatchType Type);
 
-internal readonly record struct ProcessingError(
+public readonly record struct ProcessingError(
     string RelativePath,
     string Message);
 
 /// <summary>
 /// One-vs-rest confusion-matrix counts for a single <see cref="UnicodeClass"/>.
 /// </summary>
-internal sealed class ClassConfusion
+public sealed class ClassConfusion
 {
-    internal int TruePositive;
-    internal int FalsePositive;
-    internal int FalseNegative;
-    internal int TrueNegative;
+    public int TruePositive;
+    public int FalsePositive;
+    public int FalseNegative;
+    public int TrueNegative;
 }
 
 /// <summary>
 /// Accumulates per-class confusion-matrix counts and overall pass/fail
 /// statistics across a corpus verification run.
 /// </summary>
-internal sealed class CorpusStatistics
+public sealed class CorpusStatistics
 {
-    internal int FilesDiscovered;
-    internal int FilesSkippedByFilter;
-    internal int FilesSkippedNoGroundTruth = 0;
-    internal int FilesProcessed;
-    internal int FilesErrored;
+    public int FilesDiscovered;
+    public int FilesSkippedByFilter;
+    public int FilesSkippedNoGroundTruth = 0;
+    public int FilesProcessed;
+    public int FilesErrored;
 
-    internal int OverallCorrect;
+    public int OverallCorrect;
 
-    internal readonly Dictionary<UnicodeClass, ClassConfusion> ByClass =
+    public readonly Dictionary<UnicodeClass, ClassConfusion> ByClass =
         UnicodeClassLabels.DetectableClasses.ToDictionary(
             c => c,
             _ => new ClassConfusion());
 
-    internal readonly List<MismatchRecord> Mismatches = [];
-    internal readonly List<ProcessingError> Errors = [];
+    public readonly List<MismatchRecord> Mismatches = [];
+    public readonly List<ProcessingError> Errors = [];
 
     /// <summary>
     /// Ground-truth population per display bucket (e.g. "utf-8", "Legacy",
     /// "Binary"), independent of whether detection later succeeded.
     /// </summary>
-    internal readonly Dictionary<string, int> CategoryCounts = [];
+    public readonly Dictionary<string, int> CategoryCounts = [];
 
     /// <summary>
     /// What the detector actually claimed, per class, across every file
@@ -67,14 +67,14 @@ internal sealed class CorpusStatistics
     /// says what was claimed in the first place, which is otherwise only
     /// visible for the files that turned out to be wrong.
     /// </summary>
-    internal readonly Dictionary<UnicodeClass, int> ClaimCounts = [];
+    public readonly Dictionary<UnicodeClass, int> ClaimCounts = [];
 
-    internal void RecordCategory(string category)
+    public void RecordCategory(string category)
     {
         CategoryCounts[category] = CategoryCounts.GetValueOrDefault(category) + 1;
     }
 
-    internal void RecordError(string relativePath, string message)
+    public void RecordError(string relativePath, string message)
     {
         FilesErrored++;
         Errors.Add(new ProcessingError(relativePath, message));
@@ -94,7 +94,7 @@ internal sealed class CorpusStatistics
     /// code page at once, and a detector naming any of them is right.
     /// Pass <see langword="null"/> to score strict equality.
     /// </param>
-    internal void RecordResult(
+    public void RecordResult(
         string relativePath,
         UnicodeClass expected,
         string expectedToken,
@@ -150,7 +150,7 @@ internal sealed class CorpusStatistics
             relativePath, expected, expectedToken, actual, type));
     }
 
-    internal double OverallAccuracyPercent() =>
+    public double OverallAccuracyPercent() =>
         FilesProcessed == 0 ? 0.0 : 100.0 * OverallCorrect / FilesProcessed;
 
     /// <summary>
@@ -170,7 +170,7 @@ internal sealed class CorpusStatistics
     /// counted once on each side rather than being classified as only one or
     /// the other.
     /// </remarks>
-    internal double OverallFalsePositiveRatePercent()
+    public double OverallFalsePositiveRatePercent()
     {
         long falsePositives = 0;
         long trueNegatives = 0;
@@ -190,7 +190,7 @@ internal sealed class CorpusStatistics
     /// Micro-averaged false-negative rate across every detectable class:
     /// all misses over every file that belongs to some class.
     /// </summary>
-    internal double OverallFalseNegativeRatePercent()
+    public double OverallFalseNegativeRatePercent()
     {
         long falseNegatives = 0;
         long truePositives = 0;

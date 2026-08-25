@@ -1,4 +1,4 @@
-namespace UnicodeSuiteTester;
+namespace CorpusTesting;
 
 /// <summary>
 /// The encoding classes the detection pipeline can report: the 10 Unicode
@@ -16,7 +16,7 @@ namespace UnicodeSuiteTester;
 /// <see cref="None"/> is not a category of file; it is the absence of a
 /// claim, recorded when the pipeline names no encoding at all.
 /// </summary>
-internal enum UnicodeClass
+public enum UnicodeClass
 {
     None,
     Utf8NoBom,
@@ -33,7 +33,7 @@ internal enum UnicodeClass
     Legacy,
 }
 
-internal static class UnicodeClassLabels
+public static class UnicodeClassLabels
 {
     /// <summary>
     /// Every class the pipeline can report, in display order: the 5 BOM
@@ -41,7 +41,7 @@ internal static class UnicodeClassLabels
     /// <see cref="UnicodeClass.None"/> is intentionally excluded: it
     /// means "nothing was detected", not a detectable class.
     /// </summary>
-    internal static readonly UnicodeClass[] DetectableClasses =
+    public static readonly UnicodeClass[] DetectableClasses =
     [
         UnicodeClass.Utf8Bom,
         UnicodeClass.Utf16LeBom,
@@ -57,7 +57,7 @@ internal static class UnicodeClassLabels
         UnicodeClass.Legacy,
     ];
 
-    internal static string Label(UnicodeClass value) => value switch
+    public static string Label(UnicodeClass value) => value switch
     {
         UnicodeClass.None => "(undetected)",
         UnicodeClass.Utf8NoBom => "utf-8",

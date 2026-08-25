@@ -1,7 +1,7 @@
 using System.Diagnostics;
 using System.IO.Enumeration;
 using System.Text;
-using UnicodeSuiteTester;
+using CorpusTesting;
 
 // Usage:
 //   ChardetDataTester.exe <CorpusFolder> [FilenamePattern] [-report <ReportFile>]

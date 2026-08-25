@@ -1,12 +1,12 @@
 using System.Text;
 
-namespace UnicodeSuiteTester;
+namespace CorpusTesting;
 
 /// <summary>
 /// Formats a <see cref="CorpusStatistics"/> run into the text report and the
 /// condensed console summary.
 /// </summary>
-internal static class ReportWriter
+public static class ReportWriter
 {
     private static string CountPercent(int count, int total) =>
         total == 0
@@ -29,7 +29,7 @@ internal static class ReportWriter
     /// <param name="stats"></param>
     /// <param name="testRunDate"></param>
     /// <param name="elapsed"></param>
-    internal static string BuildReport(
+    public static string BuildReport(
         string corpusFolder,
         string filenamePattern,
         string suiteName,
@@ -175,7 +175,7 @@ internal static class ReportWriter
         return sb.ToString();
     }
 
-    internal static string BuildConsoleSummary(CorpusStatistics stats, TimeSpan elapsed)
+    public static string BuildConsoleSummary(CorpusStatistics stats, TimeSpan elapsed)
     {
         StringBuilder sb = new();
 

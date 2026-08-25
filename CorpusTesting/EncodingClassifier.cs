@@ -1,6 +1,6 @@
 using System.Text;
 
-namespace UnicodeSuiteTester;
+namespace CorpusTesting;
 
 /// <summary>
 /// Maps the <see cref="Encoding"/> returned by <see cref="TextEncoding"/>
@@ -17,7 +17,7 @@ namespace UnicodeSuiteTester;
 /// Encoding objects, and matching only singletons would file every one of them
 /// under Legacy - including a genuine ASCII or UTF-8 answer.
 /// </summary>
-internal static class EncodingClassifier
+public static class EncodingClassifier
 {
     private const int CodePageAscii = 20127;
     private const int CodePageUtf8 = 65001;
@@ -26,7 +26,7 @@ internal static class EncodingClassifier
     private const int CodePageUtf32Le = 12000;
     private const int CodePageUtf32Be = 12001;
 
-    internal static UnicodeClass Classify(Encoding? encoding)
+    public static UnicodeClass Classify(Encoding? encoding)
     {
         if (encoding is null)
             return UnicodeClass.None;

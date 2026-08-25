@@ -1,3 +1,5 @@
+using CorpusTesting;
+
 namespace UnicodeSuiteTester;
 
 /// <summary>

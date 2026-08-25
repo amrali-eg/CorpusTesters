@@ -10,6 +10,8 @@ using System.Text;
 //   -report           Path to write the text report (default: a timestamped
 //                     file next to UnicodeSuiteTester.exe).
 
+using CorpusTesting;
+
 namespace UnicodeSuiteTester;
 
 internal sealed class Program

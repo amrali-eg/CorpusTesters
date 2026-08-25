@@ -2,7 +2,7 @@ using System.Buffers;
 using System.Globalization;
 using System.Text;
 
-namespace UnicodeSuiteTester;
+namespace CorpusTesting;
 
 /// <summary>
 /// Provides strict decoding and text-quality validation for byte buffers
