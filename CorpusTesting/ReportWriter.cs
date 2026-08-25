@@ -14,6 +14,30 @@ public static class ReportWriter
             : $"{count} ({100.0 * count / total:F2}%)";
 
     /// <summary>
+    /// The run summary, in exactly the form written to the console.
+    /// </summary>
+    /// <remarks>
+    /// Emitted by both <see cref="BuildReport"/> and
+    /// <see cref="BuildConsoleSummary"/> from this single method, so the block
+    /// at the top of the report is the same text that appeared on screen and
+    /// the two can never drift apart.
+    /// </remarks>
+    private static void AppendRunSummary(
+        StringBuilder sb,
+        CorpusStatistics stats,
+        TimeSpan elapsed)
+    {
+        sb.AppendLine($"Processed {stats.FilesProcessed} file(s); detector time: {elapsed.TotalMilliseconds:F3} ms.");
+        sb.AppendLine($"Skipped by filter : {stats.FilesSkippedByFilter}");
+        sb.AppendLine($"Skipped (no ground truth): {stats.FilesSkippedNoGroundTruth}");
+        sb.AppendLine($"Errors            : {stats.FilesErrored}");
+        sb.AppendLine($"Overall accuracy  : {stats.OverallAccuracyPercent():F2}%");
+        sb.AppendLine($"Overall FPR       : {stats.OverallFalsePositiveRatePercent():F2}%");
+        sb.AppendLine($"Overall FNR       : {stats.OverallFalseNegativeRatePercent():F2}%");
+        sb.AppendLine($"Mismatches        : {stats.Mismatches.Count}");
+    }
+
+    /// <summary>
     /// Builds the full text report.
     /// </summary>
     /// <param name="filenamePattern"></param>
@@ -49,17 +73,32 @@ public static class ReportWriter
         sb.AppendLine($"Detector time     : {elapsed.TotalMilliseconds:F3} ms");
         sb.AppendLine();
 
+        sb.AppendLine("Summary");
+        sb.AppendLine("-------");
+        AppendRunSummary(sb, stats, elapsed);
+        sb.AppendLine();
+
         sb.AppendLine("File Counts");
         sb.AppendLine("-----------");
-        sb.AppendLine($"Files discovered            : {stats.FilesDiscovered}");
-        sb.AppendLine($"Files skipped (filter)      : {stats.FilesSkippedByFilter}");
+        sb.AppendLine($"Files discovered               : {stats.FilesDiscovered}");
+        sb.AppendLine($"Files skipped (filter)         : {stats.FilesSkippedByFilter}");
         sb.AppendLine($"Files skipped (no ground truth): {stats.FilesSkippedNoGroundTruth}");
-        sb.AppendLine($"Files processed             : {stats.FilesProcessed}");
-        sb.AppendLine($"Files not processed (errors): {stats.FilesErrored}");
+        sb.AppendLine($"Files processed                : {stats.FilesProcessed}");
+        sb.AppendLine($"Files not processed (errors)   : {stats.FilesErrored}");
+        sb.AppendLine();
+
+        sb.AppendLine("Overall Results");
+        sb.AppendLine("---------------");
+        sb.AppendLine($"Accuracy : {stats.OverallAccuracyPercent():F2}%  (files whose reported encoding matches the ground truth)");
+        sb.AppendLine($"FPR      : {stats.OverallFalsePositiveRatePercent():F2}%  (claims asserting an encoding the file is not, summed over every class)");
+        sb.AppendLine($"FNR      : {stats.OverallFalseNegativeRatePercent():F2}%  (files whose true encoding the detector failed to report, summed over every class)");
         sb.AppendLine();
 
         sb.AppendLine($"Files per Encoding in {suiteName}");
         sb.AppendLine("------------------------------------------");
+        sb.AppendLine("Ground-truth population, independent of what was detected.");
+        sb.AppendLine();
+
         foreach (string category in categoryOrder)
         {
             sb.AppendLine($"  {category,-22}{stats.CategoryCounts.GetValueOrDefault(category),6}");
@@ -79,13 +118,6 @@ public static class ReportWriter
         sb.AppendLine(
             $"  {UnicodeClassLabels.Label(UnicodeClass.None),-22}" +
             $"{stats.ClaimCounts.GetValueOrDefault(UnicodeClass.None),6}");
-        sb.AppendLine();
-
-        sb.AppendLine("Overall Results");
-        sb.AppendLine("----------------");
-        sb.AppendLine($"Accuracy : {stats.OverallAccuracyPercent():F2}%  (files whose reported encoding matches the ground truth)");
-        sb.AppendLine($"FPR      : {stats.OverallFalsePositiveRatePercent():F2}%  (claims asserting an encoding the file is not, summed over every class)");
-        sb.AppendLine($"FNR      : {stats.OverallFalseNegativeRatePercent():F2}%  (files whose true encoding the detector failed to report, summed over every class)");
         sb.AppendLine();
 
         sb.AppendLine("Per-Encoding Results");
@@ -179,14 +211,7 @@ public static class ReportWriter
     {
         StringBuilder sb = new();
 
-        sb.AppendLine($"Processed {stats.FilesProcessed} file(s); detector time: {elapsed.TotalMilliseconds:F3} ms.");
-        sb.AppendLine($"Skipped by filter : {stats.FilesSkippedByFilter}");
-        sb.AppendLine($"Skipped (no ground truth): {stats.FilesSkippedNoGroundTruth}");
-        sb.AppendLine($"Errors            : {stats.FilesErrored}");
-        sb.AppendLine($"Overall accuracy  : {stats.OverallAccuracyPercent():F2}%");
-        sb.AppendLine($"Overall FPR       : {stats.OverallFalsePositiveRatePercent():F2}%");
-        sb.AppendLine($"Overall FNR       : {stats.OverallFalseNegativeRatePercent():F2}%");
-        sb.AppendLine($"Mismatches        : {stats.Mismatches.Count}");
+        AppendRunSummary(sb, stats, elapsed);
 
         return sb.ToString();
     }
