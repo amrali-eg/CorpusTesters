@@ -73,7 +73,7 @@ internal sealed class Program
         // report itself is never picked up as a corpus file on a later run.
         reportPath ??= Path.Combine(
             AppContext.BaseDirectory,
-            $"ChardetDetectionReport_{DateTime.Now:yyyyMMdd_HHmmss}.txt");
+            $"Chardet_Report_{DateTime.Now:yyyyMMdd_HHmmss}.txt");
 
         // Required for legacy code pages such as windows-1253.
         Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);

@@ -59,7 +59,7 @@ internal sealed class Program
         // report itself is never picked up as a corpus file on a later run.
         reportPath ??= Path.Combine(
             AppContext.BaseDirectory,
-            $"EncodingDetectionReport_{DateTime.Now:yyyyMMdd_HHmmss}.txt");
+            $"UTS_Report_{DateTime.Now:yyyyMMdd_HHmmss}.txt");
 
         // Required for legacy code pages such as windows-1253.
         Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
@@ -233,9 +233,9 @@ internal sealed class Program
     private static void PrintUsage()
     {
         Console.WriteLine("Usage:");
-        Console.WriteLine("    AmroDetector.exe <CorpusFolder> [FilenamePattern] [-report <ReportFile>]");
+        Console.WriteLine("    UnicodeSuiteTester.exe <CorpusFolder> [FilenamePattern] [-report <ReportFile>]");
         Console.WriteLine();
         Console.WriteLine("    FilenamePattern   Wildcard filter applied to filenames (default: *).");
-        Console.WriteLine("    -report           Path to write the text report (default: a timestamped file next to AmroDetector.exe).");
+        Console.WriteLine("    -report           Path to write the text report (default: a timestamped file next to UnicodeSuiteTester.exe).");
     }
 }

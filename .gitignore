@@ -15,7 +15,8 @@
 *.slnLaunch.user
 
 ## Detection reports written next to the executables
-EncodingDetectionReport_*.txt
+UTS_Report_*.txt
+Chardet_Report_*.txt
 
 ## NuGet
 *.nupkg
