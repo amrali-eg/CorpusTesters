@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="ChardetDataTester/ChardetDataTester.csproj" />
+  <Project Path="UnicodeSuiteTester.csproj" />
+</Solution>
