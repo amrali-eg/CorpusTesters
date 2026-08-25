@@ -14,9 +14,15 @@
 *.sln.docstates
 *.slnLaunch.user
 
-## Detection reports written next to the executables
+## Detection reports.
+## The timestamped names are the tool defaults, written next to the
+## executable; the fixed names are what the scan_*.cmd scripts ask for,
+## written into the repository root. Case-insensitive so a report is never
+## tracked just because -report was given a differently-cased name.
 UTS_Report_*.txt
 Chardet_Report_*.txt
+[Uu][Tt][Ss]_[Rr]eport.txt
+[Cc]hardet_[Rr]eport.txt
 
 ## NuGet
 *.nupkg
