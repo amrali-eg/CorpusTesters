@@ -38,6 +38,10 @@ jobs:
           # broken invariant is caught even where the corpora are unavailable.
           python tools/check_audit_integrity.py --help > /dev/null
 
+      - name: Negative controls - the audit notices deliberate defects
+        shell: bash
+        run: python tools/test_audit_mutations.py
+
   codec-strictness:
     # Pins the platform behaviour the whole audit rests on. Needs no corpus, so
     # it runs on every push rather than only when someone remembers to audit.

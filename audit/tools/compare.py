@@ -32,7 +32,7 @@ SEVERITY = {
     "WriteError": 3,
     "ReferenceDecodeError": 3,
     "NoOpMislabeled": 4,
-    "CodecDivergence": 5,
+    "MappingDifference": 5,
     "Misdetection": 6,
     # Silent, undetected content loss is the worst outcome available: the run
     # reports success and the damage is invisible.
@@ -71,7 +71,7 @@ def metrics(rows: list[dict]) -> dict[str, tuple[int, int]]:
         "StrictDecoding": (len(scored) - silent, len(scored)),
         "CodecConformance": (
             len(scored) - sum(1 for r in scored
-                              if r["FailureCategory"] == "CodecDivergence"),
+                              if r["FailureCategory"] == "MappingDifference"),
             len(scored)),
         "TextPreservation": (
             sum(1 for r in compared if r["TextIdentical"] == "True"), len(compared)),

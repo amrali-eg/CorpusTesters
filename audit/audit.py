@@ -581,7 +581,7 @@ def first_difference(a: str, b: str) -> tuple[int, str, str, str, str, str, str]
 
 
 def classify(row: AuditRow) -> str:
-    """Deterministic precedence. SilentDecodeLoss outranks CodecDivergence."""
+    """Deterministic precedence. SilentDecodeLoss outranks MappingDifference."""
     # Scope first: a file the audit has no standing to judge must never be
     # scored, in either direction.
     if row.ReferenceMetadataSource in ("OutOfScope", "NotInManifest",
@@ -630,7 +630,7 @@ def classify(row: AuditRow) -> str:
     if row.DetectionMatch == "False":
         return "Misdetection"
 
-    return "CodecDivergence"
+    return "MappingDifference"
 
 
 # --------------------------------------------------------------------------
@@ -815,7 +815,7 @@ def audit_corpus(args, out_dir: Path) -> tuple[list[AuditRow], dict, dict]:
         # An empty output is a real result, not a missing one: a file holding
         # nothing but a BOM correctly converts to zero bytes when the target
         # carries no preamble. Skipping the decode here left it uncompared and
-        # it fell through to CodecDivergence.
+        # it fell through to MappingDifference.
         converted_text = None
         if (row.ConversionStatus == "Converted" and not current
                 and row.FailureCategory != "ReferenceDecodeError"):
@@ -974,7 +974,7 @@ def apply_forced_reference(rows: list[AuditRow], work: Path,
 # --------------------------------------------------------------------------
 
 PRIMARY_OUTCOMES = [
-    "PASS", "NoOpCorrect", "NoOpMislabeled", "Misdetection", "CodecDivergence",
+    "PASS", "NoOpCorrect", "NoOpMislabeled", "Misdetection", "MappingDifference",
     "SilentDecodeLoss", "UnknownEncoding", "DecodeError", "EncodeError",
     "WriteError", "ReferenceDecodeError", "MetadataConflict",
     "BackupIntegrityFailure", "MissingBackup", "MissingConvertedFile",
@@ -1039,12 +1039,12 @@ def write_summary_csv(rows: list[AuditRow], out_dir: Path) -> None:
         writer.writerow([
             "ReferenceEncoding", "DetectedEncoding", "FileCount", "ConvertedCount",
             "SkippedCount", "ErrorCount", "TextIdenticalCount", "TextDifferentCount",
-            "MisdetectionCount", "CodecDivergenceCount", "SilentDecodeLossCount"])
+            "MisdetectionCount", "MappingDifferenceCount", "SilentDecodeLossCount"])
         for (ref, det), c in sorted(pairs.items()):
             writer.writerow([
                 ref, det, c["FileCount"], c["Converted"], c["Skipped"], c["Error"],
                 c["TextIdenticalCount"], c["TextDifferentCount"],
-                c["Misdetection"], c["CodecDivergence"], c["SilentDecodeLoss"]])
+                c["Misdetection"], c["MappingDifference"], c["SilentDecodeLoss"]])
 
 
 def write_metadata_summary(rows: list[AuditRow], out_dir: Path) -> None:
@@ -1084,7 +1084,7 @@ def reconcile(rows: list[AuditRow]) -> tuple[dict, list[str]]:
 
     text_diff = sum(1 for r in rows if r.TextIdentical == "False")
     causes = sum(outcome[k] for k in
-                 ("Misdetection", "CodecDivergence", "SilentDecodeLoss", "NoOpMislabeled"))
+                 ("Misdetection", "MappingDifference", "SilentDecodeLoss", "NoOpMislabeled"))
     if text_diff > causes:
         problems.append(
             f"{text_diff} text mismatches but only {causes} classified causes")
@@ -1178,7 +1178,7 @@ def write_summary_md(rows: list[AuditRow], strictness: dict, recon: dict,
         f"cannot represent? | {strict_verdict} |")
     add(f"| 3 | Codec conformance | Where EC named the right codec, does its "
         f"mapping table agree with the reference? | "
-        f"{outcome['CodecDivergence']} divergence(s) |")
+        f"{outcome['MappingDifference']} divergence(s) |")
     add(f"| 4 | End-to-end text preservation | Is the output the same text as the "
         f"input? | {identical}/{compared}"
         f"{f' ({100*identical/compared:.2f}%)' if compared else ''} |")
@@ -1303,12 +1303,12 @@ def write_summary_md(rows: list[AuditRow], strictness: dict, recon: dict,
         by_ref[row.ReferenceEncodingDeclared or "(none)"][row.FailureCategory] += 1
     add("## By reference encoding")
     add("")
-    add("| Reference encoding | Files | PASS | Misdetection | CodecDivergence | SilentDecodeLoss |")
+    add("| Reference encoding | Files | PASS | Misdetection | MappingDifference | SilentDecodeLoss |")
     add("|---|---:|---:|---:|---:|---:|")
     for ref in sorted(by_ref):
         c = by_ref[ref]
         add(f"| {ref} | {sum(c.values())} | {c['PASS']} | {c['Misdetection']} "
-            f"| {c['CodecDivergence']} | {c['SilentDecodeLoss']} |")
+            f"| {c['MappingDifference']} | {c['SilentDecodeLoss']} |")
     add("")
 
     (out_dir / "summary.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -1450,7 +1450,7 @@ def main() -> int:
     if args.strict:
         if problems or sum(outcome[k] for k in INFRASTRUCTURE_OUTCOMES):
             return EXIT_INFRASTRUCTURE
-        if sum(outcome[k] for k in ("Misdetection", "CodecDivergence",
+        if sum(outcome[k] for k in ("Misdetection", "MappingDifference",
                                     "SilentDecodeLoss", "NoOpMislabeled")):
             return EXIT_REGRESSION
 

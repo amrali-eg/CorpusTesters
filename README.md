@@ -182,7 +182,7 @@ degraded success.
 A single blended "accuracy" would average silent data loss against files that
 merely happened to be ASCII, so these are never combined:
 
-| Corpus | Files | Detection (exact codec) | + byte-equivalent | Text preserved | Codec divergences |
+| Corpus | Files | Detection (exact codec) | + text-equivalent | Text preserved | Mapping differences |
 |---|---:|---:|---:|---:|---:|
 | UnicodeTestSuite v3.0 | 1,367 | 1011/1300 (77.8%) | 92.8% | 1207/1271 (**95.0%**) | 0 |
 | chardet `test-data` | 3,166 | 2265/3128 (72.4%) | 79.2% | 2433/2949 (**82.5%**) | 45 |
@@ -202,7 +202,7 @@ v3.6.0. One file was silently altered before; see [What this found](#what-this-f
 | `Misdetection` | 421 | Wrong codec named; text differs |
 | `UnknownEncoding` | 262 | Detector named nothing; file left untouched |
 | `NoOpMislabeled` | 251 | Bytes unchanged but the label was wrong — mostly UTF-7 reported as `us-ascii` |
-| `CodecDivergence` | 89 | Right codec, but .NET and the reference implementation map it differently |
+| `MappingDifference` | 89 | Right codec, but the two implementations use different published mappings |
 | `OutOfScope` | 39 | Repository metadata and sidecar directories, not corpus fixtures |
 | `NoReferenceEncoding` | 16 | Corpus explicitly declares "no encoding" |
 | `UnknownReferenceEncoding` | 2 | No Python codec exists (`euc-tw`, `viscii`) |
@@ -225,29 +225,66 @@ directory correctly.
 
 75.7% exact is the strict number, but it conflates two different things:
 
-- **Byte-equivalent labellings (434 files).** Re-encoding the text with the codec
-  the detector named reproduces the file byte-for-byte, so the disagreement
-  cannot lose anything — a pure-ASCII UTF-8 file reported as `us-ascii` is the
-  common case. Established by re-encoding, **not** by trusting the corpus's own
+- **Text-equivalent labellings (434 files).** Decoding the original bytes with
+  the codec the detector named yields the same text as the reference codec, so
+  the disagreement cannot lose anything — a pure-ASCII UTF-8 file reported as
+  `us-ascii` is the common case. Tested in the decode direction deliberately:
+  re-encoding the reference text and comparing bytes proves a round-trip
+  property, not that decoding gives the same text, and decoding is what the tool
+  actually does. Established this way, **not** by trusting the corpus's own
   compatibility metadata.
 - **No .NET codec at all (297 files).** `hp-roman8`, `kz1048`, `ptcp154`,
   `iso-8859-10/14/16`, `cp720`, `utf-7` and others have no .NET code page, so no
   detector could have named them. Excluding those raises the total to **80.5%**.
 
-### Where the remaining errors actually are
+### Mapping differences, and what they actually are
 
-The 90 codec divergences are dominated by known Microsoft-vs-Unicode mapping
-differences in the Japanese code pages, not by detector error:
+89 files decode to different text under .NET than under the reference
+implementation *while both use the codec the corpus declared*. These are
+recorded as `MappingDifference` rather than as a divergence or a defect, because
+for most of them there is no single authoritative mapping to be wrong about: a
+character map is a mapping between a repertoire and bytes, and more than one
+published map exists for several of these encodings.
 
-| Reference | Expected | .NET produced | Files |
+They fall into three genuinely different situations, which are worth separating
+rather than reporting as one number.
+
+**Two published character maps of the same encoding — 86 files.** The Japanese
+cases are the well-known JIS X 0208 wave-dash split. Byte pair `0x8160`
+(Shift_JIS) / `0xA1C1` (EUC-JP) is `U+301C` WAVE DASH under the JIS-derived
+mapping and `U+FF5E` FULLWIDTH TILDE under Microsoft's code page 932; `0x817C` /
+`0xA1DD` is `U+2212` MINUS SIGN versus `U+FF0D` FULLWIDTH HYPHEN-MINUS. Big5 has
+the same character of problem with several competing tables.
+
+| Reference | Reference map | .NET (code page) | Files |
 |---|---|---|---:|
 | `shift_jis` | U+301C wave dash | U+FF5E fullwidth tilde | 30 |
 | `euc_jp` | U+301C wave dash | U+FF5E fullwidth tilde | 24 |
-| `shift_jis` | U+2212 minus | U+FF0D fullwidth hyphen | 13 |
-| `gb2312` | U+2015 horizontal bar | U+2014 em dash | 10 |
-| `euc_jp` | U+2212 minus | U+FF0D fullwidth hyphen | 8 |
+| `shift_jis` | U+2212 minus | U+FF0D fullwidth hyphen-minus | 13 |
+| `euc_jp` | U+2212 minus | U+FF0D fullwidth hyphen-minus | 8 |
+| `big5` | U+223C tilde operator | U+FF5E fullwidth tilde | 4 |
+| `big5` | U+FF0F, U+FF64, U+00A3 | U+2215, U+FE51, U+FFE1 | 6 |
+| `iso2022_jp` | U+301C wave dash | U+FF5E fullwidth tilde | 1 |
 
-These are properties of .NET's code-page tables, not bugs in either tool.
+Neither side is decoding incorrectly. They implement different published maps,
+and which one a user wants depends on where the file came from.
+
+**A different encoding substituted for the requested name — 2 files.** For
+`tis-620`, .NET resolves the name to **code page 874, Windows-874**, which is a
+superset. Bytes `0x93` and `0x95` are *undefined* in TIS-620 proper — the
+reference passes them through as the C1 code points `U+0093`/`U+0095`, while
+Windows-874 assigns them `U+201C` and `U+2022`. This is not two maps of one
+encoding; it is a different encoding answering to the same name.
+
+**A revised mapping table — 1 file.** `mac-cyrillic` byte `0xFF` is `U+0490`
+GHE WITH UPTURN in the later Apple table and `U+00A2` CENT SIGN in the earlier
+one.
+
+None of these is a detector error, and none is caused by EncodingChecker. What
+the audit can say is that the two implementations disagree and which bytes
+provoke it; what it deliberately does **not** claim is which mapping is
+authoritative, because for most of these that would require picking a winner
+between two published standards.
 
 ### Forced-reference experiment
 

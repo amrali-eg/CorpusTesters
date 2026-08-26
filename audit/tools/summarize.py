@@ -11,7 +11,7 @@ import sys
 from collections import Counter, defaultdict
 from pathlib import Path
 
-PRIMARY = ["PASS", "NoOpMislabeled", "Misdetection", "CodecDivergence",
+PRIMARY = ["PASS", "NoOpMislabeled", "Misdetection", "MappingDifference",
            "SilentDecodeLoss", "UnknownEncoding", "DecodeError", "EncodeError",
            "ReferenceDecodeError", "OutOfScope", "NoReferenceEncoding",
            "UnknownReferenceEncoding", "MetadataConflict",

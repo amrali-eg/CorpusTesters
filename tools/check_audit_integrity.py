@@ -41,7 +41,7 @@ SOURCES = {
 }
 
 PRIMARY_OUTCOMES = {
-    "PASS", "NoOpCorrect", "NoOpMislabeled", "Misdetection", "CodecDivergence",
+    "PASS", "NoOpCorrect", "NoOpMislabeled", "Misdetection", "MappingDifference",
     "SilentDecodeLoss", "UnknownEncoding", "DecodeError", "EncodeError",
     "WriteError", "ReferenceDecodeError", "MetadataConflict",
     "BackupIntegrityFailure", "MissingBackup", "MissingConvertedFile",
@@ -286,7 +286,7 @@ def check_reconciliation(corpus: str, rows: list[dict], report: Report) -> None:
     # The converse does not hold: NoOpMislabeled covers both a wrong label with
     # consequences (UTF-7 left as ASCII) and a harmless one, so counting it as a
     # text-difference cause in aggregate would not reconcile.
-    diff_causes = {"Misdetection", "CodecDivergence", "SilentDecodeLoss",
+    diff_causes = {"Misdetection", "MappingDifference", "SilentDecodeLoss",
                    "NoOpMislabeled"}
     unexplained = [r for r in rows
                    if r["TextIdentical"] == "False"
