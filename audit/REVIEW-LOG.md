@@ -203,12 +203,34 @@ underwent a valid comparison. Two reporting axes rather than one, and
 `TextLossRisk` separated from `ConversionCoverage` — a skipped file has zero
 data-loss risk and total conversion failure, and those are different facts.
 
-### §16 — Independent oracle on a stratified sample
+### §16 — Independent oracle · **implemented, second stage**
 
-Agreed, and the cheapest real answer to the epistemic problem in §36. Not every
-file needs a third implementation; a sample stratified by encoding, corpus, BOM,
-size, detector result and mismatch category would catch reference-decoder bugs
-without a multi-runtime harness.
+1,033 files over 646 strata, decoded with GNU libiconv and Node/ICU alongside
+the reference. Full findings in
+[`REVIEW-RESPONSE-STAGE2.md`](REVIEW-RESPONSE-STAGE2.md).
+
+**603 of the 651 files with an available oracle agree completely (92.6%).** Every
+disagreement found is a mapping or profile difference; none is an implementation
+defect.
+
+The wave-dash question is now settled rather than left open: Python and iconv
+give `U+301C`, ICU and .NET give `U+FF5E`. The reference is one of two camps, and
+.NET is not an outlier — it agrees with the standard browsers implement.
+
+**16 of 1,033 (1.5%)** carry a verdict that depends on which implementation is
+treated as reference. That bounds the reference's influence on the published
+figures; none is a case where EC did anything wrong.
+
+Two limits stated rather than glossed: 374 sampled files have no independent
+oracle at all, and agreement between two implementations is not authority.
+
+One defect found in the tool itself before it produced anything: `argv.slice(1)`
+included the script path, so Node was reading the filename as the encoding label
+and returning "unavailable" for every file. The run reported "all agree" on a
+comparison that was silently two-way. Caught by testing ICU against a file known
+to contain the disputed byte pair rather than trusting the summary. A second
+artifact - ICU strips BOMs where Python does not - was manufacturing 15 findings
+at index 0 until BOM handling was aligned with the audit.
 
 ### §37 — Safe-refusal rate as a fifth metric
 
