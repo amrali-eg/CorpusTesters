@@ -65,22 +65,9 @@ DETECTION_OUTCOMES = {
 }
 
 
-def structure_bearing(codec: str) -> bool:
-    """Whether a codec constrains byte sequences, i.e. is multi-byte.
-
-    Recomputed here rather than read from the audit's own output: a taxonomy
-    that graded itself against its own definition would agree with itself no
-    matter what the definition had become.
-    """
-    if not codec:
-        return False
-    for ch in ("é", "世", "Ж"):
-        try:
-            if len(ch.encode(codec)) > 1:
-                return True
-        except (UnicodeEncodeError, LookupError):
-            continue
-    return False
+# Mirrors audit.CONSTRAINT_FLOOR. Stated here rather than imported so a change
+# to the audit's threshold has to be made deliberately in both places.
+CONSTRAINT_FLOOR = 0.10
 
 
 UNSCORED = {
@@ -225,16 +212,31 @@ def check_row_consistency(corpus: str, rows: list[dict], report: Report) -> None
                             f"{corpus}/{path}: TextEquivalent without equivalent text")
                 failures += 1
 
-        # Ambiguity is a claim that neither codec constrained the bytes. A
-        # multi-byte encoding on either side contradicts it.
+        # Ambiguity is a claim that these bytes carried no evidence. The
+        # recorded constraint measurement has to support it.
         if detection == "StructurallyAmbiguous":
-            for codec in (r["ReferenceEncoding"], r["DetectedEncoding"]):
-                if structure_bearing(codec):
-                    report.fail("detection",
-                                f"{corpus}/{path}: StructurallyAmbiguous but "
-                                f"{codec!r} is multi-byte and does constrain the bytes")
-                    failures += 1
-                    break
+            try:
+                measured = float(r.get("ReferenceConstraint", -1))
+            except ValueError:
+                measured = -1.0
+            if measured >= CONSTRAINT_FLOOR:
+                report.fail("detection",
+                            f"{corpus}/{path}: StructurallyAmbiguous but the "
+                            f"reference codec rejects {measured:.0%} of mutations "
+                            f"of this file, so the bytes did constrain it")
+                failures += 1
+
+        # A substantive misdetection has to name which signal was available.
+        if detection == "Misdetection":
+            try:
+                measured = float(r.get("ReferenceConstraint", -1))
+            except ValueError:
+                measured = -1.0
+            if measured < 0:
+                report.fail("detection",
+                            f"{corpus}/{path}: Misdetection with no constraint "
+                            f"measurement recorded")
+                failures += 1
 
         if detection == "NoDotNetCodec" and r["ReferenceCodePage"]:
             report.fail("detection",

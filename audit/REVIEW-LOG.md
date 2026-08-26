@@ -13,6 +13,7 @@ are as interesting as points pushed back on, and both are recorded.
 | | Points |
 |---|---:|
 | Accepted and implemented | 8 |
+| Superseded by the reviewer's second-round correction | 1 |
 | Accepted, not yet implemented | 2 |
 | Pushed back on | 2 |
 
@@ -127,8 +128,8 @@ rewrite the same tables.
 |---|---:|
 | `ExactMatch` | 3,756 |
 | `TextEquivalent` | 401 |
-| `StructurallyAmbiguous` | 257 |
-| `Misdetection` | 74 |
+| `StructurallyAmbiguous` | 262 |
+| `Misdetection` | 69 |
 | `NoDotNetCodec` | 297 |
 | `NotIdentified` | 177 |
 | `NoReference` | 116 |
@@ -137,23 +138,28 @@ Of 4,488 files where a detector could be judged at all, **4,157 (92.6%)** were
 named exactly or named as a codec giving identical text.
 
 **What the split revealed.** The old figure counted 331 mismatches as one
-undifferentiated number. They are not one thing: **257 are structurally
-ambiguous and only 74 are substantive.** Single-byte code pages map 256 values
+undifferentiated number. They are not one thing: **262 are structurally
+ambiguous and only 69 are substantive.** Single-byte code pages map 256 values
 independently, so a file valid in `windows-1252` is equally valid in
 `iso-8859-1`, and no byte inspection decides between them — `cp850 →
-windows-1252`, `koi8-u → koi8-r`, `mac-roman → iso-8859-1`. The substantive 74
+windows-1252`, `koi8-u → koi8-r`, `mac-roman → iso-8859-1`. The substantive 69
 are multi-byte encodings read as single-byte (`euc_jp → windows-1257`,
 `gb18030 → windows-1252`), where the file's sequence structure was available
 evidence and was not used.
 
-**The discriminator is measured, not listed.** A codec is structure-bearing if
-encoding a non-ASCII character takes more than one byte — asked of the codec, so
-one this audit has never seen is still classified correctly. A first attempt
-based on "how many candidate codecs decode this file" was wrong in both
-directions: unconstrained single-byte codecs decode everything, which made real
-misdetections look ambiguous, and codecs absent from the corpus-derived
-candidate list made real ambiguity look like misdetection. That was caught by
-inspecting the resulting pairs rather than by the counts looking plausible.
+**The discriminator took three attempts.** Candidate-set membership was wrong in
+both directions — unconstrained codecs decode everything, so real misdetections
+looked ambiguous, and codecs absent from the corpus-derived list made real
+ambiguity look like misdetection. Multi-byte-vs-single-byte was better but too
+broad, as the reviewer pointed out on seeing it: single-byte does not mean
+unconstrained, since `windows-1252` leaves five byte values undefined and a
+sequence containing one is evidence against it.
+
+The measure now asks the question of *these particular bytes*: what fraction of
+single-byte mutations of this file does the codec reject? Multi-byte codecs on
+real content reject 17–38%; single-byte codecs reject 0%; a `windows-1252` file
+containing an undefined byte measures non-zero and is classified accordingly.
+Final counts 262 ambiguous / 69 substantive.
 
 **Coverage and risk are now separate axes.** A skipped file carries no risk of
 losing text and total risk of not doing the job; those are different facts and

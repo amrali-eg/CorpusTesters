@@ -28,6 +28,7 @@ import hashlib
 import json
 import os
 import platform
+import random
 import re
 import shutil
 import subprocess
@@ -135,6 +136,7 @@ class AuditRow:
     PlausibleCodecCount: int = -1
     DistinctReadings: int = -1
     PlausibleCodecs: str = ""
+    ReferenceConstraint: float = -1.0
 
     ConversionStatus: str = ""
     ConversionErrorStage: str = ""
@@ -551,6 +553,45 @@ def phase0(encodings: list[str]) -> dict[str, dict]:
     return {p["Encoding"]: p for p in probes}
 
 
+def constraint_on(data: bytes, codec: str, trials: int = 48,
+                  limit: int = 64 * 1024) -> float:
+    """How tightly this codec constrains *these particular bytes*.
+
+    Returns the fraction of single-byte mutations the codec rejects. A file
+    whose validity survives every mutation was never evidence of anything - any
+    byte sequence would have decoded. A file where a third of mutations break
+    the decode is valid for a reason, and that reason is evidence.
+
+    Measured per file rather than per codec on purpose. "Single-byte codecs are
+    unconstrained" is a useful generalisation and a false rule: windows-1252
+    leaves 0x81, 0x8D, 0x8F, 0x90 and 0x9D undefined, so a byte sequence
+    containing one of them *is* structural evidence against it. Asking the
+    question of the actual bytes catches that; asking it of the codec does not.
+    """
+    sample = data[:limit]
+    if not sample:
+        return 0.0
+
+    rnd = random.Random(0xC0DEC)          # fixed: the answer must not drift
+    rejected = 0
+    for _ in range(trials):
+        index = rnd.randrange(len(sample))
+        mutated = bytearray(sample)
+        mutated[index] ^= rnd.choice((0x80, 0x40, 0x20, 0x01))
+        try:
+            bytes(mutated).decode(codec)
+        except (UnicodeDecodeError, LookupError, ValueError):
+            rejected += 1
+    return rejected / trials
+
+
+# Below this, a codec has effectively no hold on the input: nearly any byte
+# sequence decodes, so the file being valid says nothing about which codec
+# wrote it. Deliberately low - the claim "the bytes could not have decided"
+# should be made only when they clearly could not.
+CONSTRAINT_FLOOR = 0.10
+
+
 def is_structure_bearing(codec: str) -> bool:
     """Whether this codec constrains the *sequence* of bytes, not just their values.
 
@@ -716,14 +757,23 @@ def classify_detection(row: AuditRow, inv: InventoryRow,
     row.DistinctReadings = distinguishable_by_text(original_bytes, plausible)
     row.PlausibleCodecs = ",".join(plausible[:8])
 
-    # Evidence is a property of the codecs involved, not of how many names
-    # happen to be in the candidate list. If either codec carries sequence
-    # structure, the bytes could have discriminated and the detector had
-    # something to go on. If both are single-byte maps, they could not: every
-    # byte is valid in both, and only statistical heuristics remain - exactly
-    # what is unreliable on short or ASCII-heavy input.
-    evidence_available = (is_structure_bearing(inv.ReferenceEncoding)
-                          or is_structure_bearing(detected_codec))
+    # Whether the bytes carried evidence is asked of the bytes, per file.
+    #
+    # Two independent signals count as evidence. Either the codec EC chose
+    # cannot actually read the whole file - it passed on a sample and fails on
+    # the rest - or the reference codec demonstrably constrains this input, so
+    # the file being valid under it was not an accident.
+    try:
+        original_bytes.decode(detected_codec)
+        detected_accepts = True
+    except (UnicodeDecodeError, LookupError, ValueError):
+        detected_accepts = False
+
+    row.ReferenceConstraint = round(
+        constraint_on(original_bytes, inv.ReferenceEncoding), 3)
+
+    evidence_available = (not detected_accepts
+                          or row.ReferenceConstraint >= CONSTRAINT_FLOOR)
 
     row.DetectionOutcome = ("Misdetection" if evidence_available
                             else "StructurallyAmbiguous")
