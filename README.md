@@ -402,6 +402,79 @@ once and needed three separate fixes. When changing any of these files, check th
 other two repositories before assuming the change is complete, and prefer changes
 that keep `TextValidation.cs` identical across them.
 
+## What safety this actually buys
+
+The point of all of the above is a claim about data loss. Stated separately for
+each tool and each class of input, because the guarantees genuinely differ.
+
+### EncodingChecker — it re-encodes, so it carries real risk
+
+Every file goes through decode and re-encode, so a wrong codec produces a wrong
+file. Measured over the files EC actually **rewrote** (files it skipped or left
+byte-identical cannot have lost anything):
+
+| Source | Rewritten | Text preserved | Changed |
+|---|---:|---:|---:|
+| Unicode + ASCII | 1,832 | 1,825 (**99.62%**) | 3 |
+| Legacy code page (.NET has a codec) | 2,022 | 1,602 (**79.23%**) | 419 |
+| No .NET codec exists | 112 | 21 (18.75%) | 76 |
+
+**Unicode and ASCII input is effectively safe.** All three failures are the same
+case: BOM-less UTF-16BE detected as UTF-16LE. With a BOM, or with any UTF-8
+input, no file in 5,078 lost content.
+
+**Legacy input is where the risk lives**, and not because of the converter — the
+converter is exact once it has the right codec. The failures are detection
+failures: single-byte code pages are mutually decodable, so `windows-1252` text
+is perfectly valid `iso-8859-1` text, and nothing in the bytes says which was
+intended. The forced-reference experiment isolates this: given the correct codec,
+569 of those files convert perfectly.
+
+**Encodings .NET has no codec for cannot be handled at all** — `hp-roman8`,
+`kz1048`, `ptcp154`, `iso-8859-10/14/16`, `utf-7`. EC's honest behaviour here is
+to decline, and it usually does (244 of 356 untouched).
+
+What protects you in the remaining cases: EC refuses rather than guesses when the
+detector names nothing, verifies every write by re-decoding and hashing before
+installing it, never rewrites in place, and can keep a `.bak`. A misdetected
+single-byte file is also usually *recoverable* — the mapping is bijective, so
+converting back with the right codec restores the original text.
+
+### LineEndingNormalizer — it does not re-encode, so most of that risk does not exist
+
+LEN never changes a file's encoding, and for legacy files **it never decodes them
+at all**:
+
+- **Unicode input** is decoded strictly, normalized, and re-encoded in the *same*
+  encoding, with the result hash-verified before installation. The re-encode is
+  to the encoding the file already had, so there is no codec-mismatch failure
+  mode — only the strict decode, which rejects malformed input rather than
+  replacing it.
+- **Legacy input is scanned as raw bytes.** Only `0x0D` and `0x0A` are ever
+  rewritten; every other byte is copied through untouched. No decode, no
+  re-encode, so no codec can lose anything.
+
+That byte path is gated. Single-byte encodings are verified at runtime to map
+`0x0D`/`0x0A` to CR/LF, which makes byte scanning provably safe when every byte
+is one character. Multi-byte encodings must appear in an explicit allowlist —
+Shift-JIS, EUC-KR, EUC-JP, GBK, GB18030, Big5 — each verified not to produce
+`0x0D`/`0x0A` inside a multi-byte sequence. Anything else is treated as
+undetected and left alone.
+
+The practical consequence: **a misdetection that would corrupt a file under EC is
+usually harmless under LEN**, because naming the wrong single-byte code page does
+not change which bytes are CR or LF. LEN's exposure is narrower by construction,
+not by a better detector — it is the same detector.
+
+### What this audit does and does not cover
+
+It measures **EncodingChecker's converter** end to end. It does **not** exercise
+LineEndingNormalizer's writer: the two share a detector, so the detection results
+above apply to both, but LEN's normalization path is covered by its own test
+suite rather than by these corpus runs. The safety argument for LEN's byte path
+is structural — it is verified by construction and by unit tests, not by a
+5,078-file conversion sweep.
+
 ## License
 
 The corpora are the property of their respective projects and are subject to
