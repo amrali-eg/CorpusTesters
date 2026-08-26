@@ -56,9 +56,21 @@ None are vendored here; all four are public and independently maintained.
 | **charset-normalizer `char-dataset`** | https://github.com/Ousret/char-dataset | 478 | Parent directory name |
 | **UTF.unknown 2.6 tests** | https://github.com/CharsetDetector/UTF-unknown | 67 | Parent directory name |
 
-**Ground truth is never derived from filenames.** Files present on disk but
-absent from the corpus's own manifest or catalogue are skipped as having no
-ground truth rather than guessed at. For UnicodeTestSuite the manifest entry is
+**Ground truth is never derived from filenames**, and a directory name is read
+the way its corpus intends rather than the way it happens to parse. chardet names
+directories `{encoding}` or `{encoding}-{language}`, and two of those names are
+*also* valid codec names: `utf-16-be` is UTF-16 **Belarusian**, not UTF-16 Big
+Endian, as are `utf-32-be`. Taking the longest match read six little-endian files
+backwards and made a correct detection look like a corpus mislabel. The language
+tags are now discovered from the corpus itself — a trailing segment counts as a
+language only where it also tags directories whose encoding prefix resolves
+without it — and the ambiguity is asserted in the integrity check.
+
+Files present on disk but absent from the corpus's own manifest or catalogue are
+skipped as having no ground truth rather than guessed at. A sidecar directory
+whose name begins with `_` does not inherit the enclosing encoding either:
+chardet's `cp864-ar/_logical_source/` holds the logical-order UTF-8 text its
+shaped cp864 files were produced from, exactly as its `CATALOG.md` says. For UnicodeTestSuite the manifest entry is
 additionally cross-checked against the filename's encoding token; a disagreement
 is reported as a metadata conflict rather than silently resolved in either
 direction. (Across all four corpora, zero conflicts were found.)
@@ -172,40 +184,48 @@ merely happened to be ASCII, so these are never combined:
 
 | Corpus | Files | Detection (exact codec) | + byte-equivalent | Text preserved | Codec divergences |
 |---|---:|---:|---:|---:|---:|
-| UnicodeTestSuite v3.0 | 1,367 | 1011/1300 (77.8%) | 92.8% | 1206/1270 (**95.0%**) | 1 |
-| chardet `test-data` | 3,166 | 2265/3131 (72.3%) | 79.0% | 2427/2951 (**82.2%**) | 45 |
+| UnicodeTestSuite v3.0 | 1,367 | 1011/1300 (77.8%) | 92.8% | 1207/1271 (**95.0%**) | 0 |
+| chardet `test-data` | 3,166 | 2265/3128 (72.4%) | 79.2% | 2433/2949 (**82.5%**) | 45 |
 | charset-normalizer | 478 | 418/469 (89.1%) | 94.5% | 399/459 (**86.9%**) | 44 |
 | UTF.unknown 2.6 | 67 | 62/64 (96.9%) | 96.9% | 62/62 (**100.0%**) | 0 |
-| **All** | **5,078** | **3756/4964 (75.7%)** | **84.3%** | **4094/4742 (86.3%)** | **90** |
+| **All** | **5,078** | **3756/4961 (75.7%)** | **84.5%** | **4101/4741 (86.5%)** | **89** |
 
 Strict-decoding correctness — does the tool refuse bytes its chosen codec cannot
-represent, rather than substituting? — is **5,023 / 5,023** as of EncodingChecker
-v3.6.0. It was 5,022 / 5,023 before; see [What this found](#what-this-found).
+represent, rather than substituting? — is **5,020 / 5,020** as of EncodingChecker
+v3.6.0. One file was silently altered before; see [What this found](#what-this-found).
 
 ### Outcomes across all 5,078 files
 
 | Outcome | Files | Meaning |
 |---|---:|---|
-| `PASS` | 3,988 | Converted, text identical |
-| `Misdetection` | 424 | Wrong codec named; text differs |
+| `PASS` | 3,995 | Converted, text identical |
+| `Misdetection` | 421 | Wrong codec named; text differs |
 | `UnknownEncoding` | 262 | Detector named nothing; file left untouched |
 | `NoOpMislabeled` | 251 | Bytes unchanged but the label was wrong — mostly UTF-7 reported as `us-ascii` |
-| `CodecDivergence` | 90 | Right codec, but .NET and the reference implementation map it differently |
-| `OutOfScope` | 37 | Repository metadata, not corpus fixtures |
+| `CodecDivergence` | 89 | Right codec, but .NET and the reference implementation map it differently |
+| `OutOfScope` | 39 | Repository metadata and sidecar directories, not corpus fixtures |
 | `NoReferenceEncoding` | 16 | Corpus explicitly declares "no encoding" |
-| `ReferenceDecodeError` | 6 | The corpus's own declared codec cannot decode the file |
 | `UnknownReferenceEncoding` | 2 | No Python codec exists (`euc-tw`, `viscii`) |
 | `DecodeError` | 2 | Refused at decode — the correct outcome for unrepresentable bytes |
+| `ReferenceDecodeError` | 1 | The corpus's own declared codec cannot decode the file |
 
-The last four are reported but **never scored**: without authoritative ground
-truth, counting them as either pass or fail would be a claim the evidence does
-not support.
+`OutOfScope`, `NoReferenceEncoding`, `UnknownReferenceEncoding` and
+`ReferenceDecodeError` are reported but **never scored**: without authoritative
+ground truth, counting them as either pass or fail would be a claim the evidence
+does not support.
+
+The single `ReferenceDecodeError` is `chardet/gb2312-zh/msdn_sample.txt`, which
+contains `F9 F9` — a character in the GBK user-defined area that Python's
+`gb2312` and `gbk` codecs both reject and only `gb18030` decodes. That is a
+difference between codec implementations, not a defect in the file: chardet
+itself treats `gb2312` as an alias of `gb18030`, so its own tooling reads that
+directory correctly.
 
 ### Detection accuracy is split three ways
 
 75.7% exact is the strict number, but it conflates two different things:
 
-- **Byte-equivalent labellings (428 files).** Re-encoding the text with the codec
+- **Byte-equivalent labellings (434 files).** Re-encoding the text with the codec
   the detector named reproduces the file byte-for-byte, so the disagreement
   cannot lose anything — a pure-ASCII UTF-8 file reported as `us-ascii` is the
   common case. Established by re-encoding, **not** by trusting the corpus's own
@@ -426,6 +446,23 @@ python tools/check_detector_drift.py ../EncodingChecker ../LineEndingNormalizer 
 | `codec-strictness` | windows-latest | The platform codec behaviour every audit conclusion rests on |
 | `detector-drift` | ubuntu-latest | The three copies of the detector still agree |
 
+Plus `tools/check_audit_integrity.py`, run against a completed audit:
+
+```bash
+CORPUS_ROOT=/path/to/corpora python tools/check_audit_integrity.py audit/runs/validation
+```
+
+The audit judges everything else, so it is checked too. It re-derives what can be
+re-derived rather than trusting the run that produced it: every file on disk is
+judged exactly once and nothing is invented; each row's outcome agrees with the
+evidence on that row; every file whose text differs carries an outcome that
+explains it; and a random sample is decoded again straight from the original
+bytes, so a wrong decode cannot hide behind its own self-consistent hash.
+
+It also flags any declared token that is itself a valid codec but resolved to a
+different one. That is the check that would have caught the defect described
+below.
+
 `codec-strictness` needs no corpus, so it runs on every push rather than only
 when someone remembers to audit. It pins both halves of the finding that produced
 this repository's main result: that assigning `Decoder.Fallback` after
@@ -451,13 +488,18 @@ byte-identical cannot have lost anything):
 
 | Source | Rewritten | Text preserved | Changed |
 |---|---:|---:|---:|
-| Unicode + ASCII | 1,832 | 1,825 (**99.62%**) | 3 |
-| Legacy code page (.NET has a codec) | 2,022 | 1,602 (**79.23%**) | 419 |
+| Unicode + ASCII | 1,832 | 1,832 (**100.00%**) | 0 |
+| Legacy code page (.NET has a codec) | 2,021 | 1,602 (**79.27%**) | 419 |
 | No .NET codec exists | 112 | 21 (18.75%) | 76 |
 
-**Unicode and ASCII input is effectively safe.** All three failures are the same
-case: BOM-less UTF-16BE detected as UTF-16LE. With a BOM, or with any UTF-8
-input, no file in 5,078 lost content.
+**Unicode and ASCII input is safe on this evidence.** Not one of the 1,832 files
+EC rewrote from a Unicode or ASCII source came out with different text.
+
+An earlier revision of this table reported three failures here. They were not
+failures: the audit had parsed the corpus directory `utf-16-be` as UTF-16
+Big Endian when it means UTF-16 *Belarusian*, and read six little-endian files
+backwards. The harness was wrong, the tool was right, and the check that now
+prevents a repeat is described under [Continuous integration](#continuous-integration).
 
 **Legacy input is where the risk lives**, and not because of the converter — the
 converter is exact once it has the right codec. The failures are detection
