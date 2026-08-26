@@ -61,6 +61,10 @@ jobs:
         shell: bash
         run: python tools/check_codec_strictness.py
 
+      - name: Codec conformance - malformed input must be refused
+        shell: bash
+        run: python tools/check_codec_conformance.py
+
   detector-drift:
     # The detector is copy-pasted across three repositories and nothing else
     # enforces that the copies agree. A defect fixed in one has silently
