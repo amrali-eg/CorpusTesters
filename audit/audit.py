@@ -188,6 +188,24 @@ def strip_bom(text: str) -> str:
     return text[1:] if text.startswith("\ufeff") else text
 
 
+# Byte-order pairs, for telling an endianness mislabel from a corrupt fixture.
+ENDIAN_PARTNER = {
+    "utf-16-be": "utf-16-le", "utf-16-le": "utf-16-be",
+    "utf-32-be": "utf-32-le", "utf-32-le": "utf-32-be",
+}
+
+
+def opposite_endian_decodes(data: bytes, codec: str) -> bool:
+    """True when the other byte order reads this file and the declared one cannot."""
+    partner = ENDIAN_PARTNER.get(codec)
+    if partner is None:
+        return False
+    try:
+        return not data.decode(partner).startswith("\ufffe")
+    except (UnicodeDecodeError, LookupError):
+        return False
+
+
 def resolve_codec(name: str) -> str | None:
     """Canonical Python codec for a declared name, or None.
 
@@ -270,17 +288,35 @@ def net_name_candidates(*names: str) -> list[str]:
     return out
 
 
-def resolve_directory_codec(directory: str) -> tuple[str | None, str]:
+def resolve_directory_codec(
+        directory: str,
+        language_codes: frozenset[str] = frozenset()) -> tuple[str | None, str]:
     """chardet-style '{encoding}' or '{encoding}-{language}' directory names.
 
-    Returns (canonical codec, declared token). Longest matching prefix wins,
-    so 'windows-1252-en' resolves to windows-1252 rather than failing.
+    Returns (canonical codec, declared token).
+
+    The trailing language tag has to be stripped before the longest prefix
+    wins, because two directory names are both a valid codec AND a valid
+    encoding+language pair: 'utf-16-be' is UTF-16 Belarusian, not UTF-16
+    Big Endian, and likewise 'utf-32-be'. Taking the longest match there reads
+    little-endian files as big-endian, which looks exactly like a corpus
+    mislabel and is not one.
+
+    `language_codes` is derived from the corpus itself - a trailing segment is
+    treated as a language only where it also tags directories whose encoding
+    prefix is unambiguous - so nothing depends on a hardcoded language list.
     """
     token = directory.strip().lower()
     if token in ("none-none", ""):
         return None, directory
 
     parts = token.split("-")
+
+    if len(parts) > 1 and parts[-1] in language_codes:
+        resolved = resolve_codec("-".join(parts[:-1]))
+        if resolved:
+            return resolved, directory
+
     for cut in range(len(parts), 0, -1):
         candidate = "-".join(parts[:cut])
         resolved = resolve_codec(candidate)
@@ -288,6 +324,30 @@ def resolve_directory_codec(directory: str) -> tuple[str | None, str]:
             return resolved, directory
 
     return None, directory
+
+
+def discover_language_codes(root: Path) -> frozenset[str]:
+    """Trailing segments the corpus itself uses as language tags.
+
+    A segment counts as a language only when it tags a directory whose encoding
+    prefix resolves without needing that segment - so 'be' qualifies because it
+    also appears on windows-1251-be and friends, while a segment that only ever
+    appears in one ambiguous name does not.
+    """
+    counts: Counter = Counter()
+
+    for path in root.iterdir():
+        if not path.is_dir() or path.name.startswith("."):
+            continue
+        parts = path.name.lower().split("-")
+        for cut in range(len(parts) - 1, 0, -1):
+            if resolve_codec("-".join(parts[:cut])):
+                counts["-".join(parts[cut:])] += 1
+                break
+
+    # Two independent directories is enough to establish a tag as a language
+    # rather than part of a codec name.
+    return frozenset(tag for tag, n in counts.items() if n >= 2)
 
 
 # --------------------------------------------------------------------------
@@ -302,6 +362,10 @@ class ReferenceResolver:
         self.root = root
         self.manifest: dict[str, dict[str, str]] = {}
         self.conflicts: list[tuple[str, str, str]] = []
+
+        self.language_codes: frozenset[str] = frozenset()
+        if corpus == "chardet" and root.is_dir():
+            self.language_codes = discover_language_codes(root)
 
         if corpus == "uts3":
             manifest_path = root / "Manifest.csv"
@@ -358,6 +422,14 @@ class ReferenceResolver:
                 or rel.name.lower() in OUT_OF_SCOPE_NAMES):
             return "", None, "", "OutOfScope"
 
+        # A leading underscore marks a sidecar directory rather than fixtures of
+        # the enclosing encoding: chardet's cp864-ar/_logical_source holds the
+        # logical-order UTF-8 text its shaped cp864 files were produced from, as
+        # its CATALOG.md documents. Inheriting the parent's encoding here would
+        # invent a ground truth the corpus never claimed.
+        if any(part.startswith("_") for part in rel.parts[:-1]):
+            return "", None, "", "SidecarDirectory"
+
         if self.corpus == "chardet":
             # This repo's CATALOG.md defines the top-level directory as
             # "{encoding}" or "{encoding}-{language}".
@@ -377,7 +449,7 @@ class ReferenceResolver:
         if token.strip().lower() in NO_REFERENCE_TOKENS:
             return token, None, "", "NoReferenceEncoding"
 
-        canonical, declared = resolve_directory_codec(token)
+        canonical, declared = resolve_directory_codec(token, self.language_codes)
         return declared, canonical, "", source
 
 
@@ -512,7 +584,8 @@ def classify(row: AuditRow) -> str:
     """Deterministic precedence. SilentDecodeLoss outranks CodecDivergence."""
     # Scope first: a file the audit has no standing to judge must never be
     # scored, in either direction.
-    if row.ReferenceMetadataSource in ("OutOfScope", "NotInManifest", "ExcludedByEC"):
+    if row.ReferenceMetadataSource in ("OutOfScope", "NotInManifest",
+                                      "ExcludedByEC", "SidecarDirectory"):
         return "OutOfScope"
     if row.ReferenceMetadataSource == "NoReferenceEncoding":
         return "NoReferenceEncoding"
@@ -530,8 +603,8 @@ def classify(row: AuditRow) -> str:
         return "MissingBackup"
     if row.ConversionStatus == "MissingConvertedFile":
         return "MissingConvertedFile"
-    if row.FailureCategory == "ReferenceDecodeError":
-        return "ReferenceDecodeError"
+    if row.FailureCategory in ("ReferenceDecodeError", "CorpusByteOrderMislabel"):
+        return row.FailureCategory
     if row.ConversionStatus == "Skipped":
         return "UnknownEncoding"
     if row.ConversionStatus == "Error":
@@ -686,12 +759,37 @@ def audit_corpus(args, out_dir: Path) -> tuple[list[AuditRow], dict, dict]:
         reference_text = None
         if inv.ReferenceEncoding:
             try:
-                reference_text = strip_bom(original_bytes.decode(inv.ReferenceEncoding))
-                row.ReferenceTextLength = len(reference_text)
-                row.ReferenceTextSha256 = hash_text(reference_text)
+                decoded = original_bytes.decode(inv.ReferenceEncoding)
+
+                # U+FFFE leading the decode is a byte-order mark read in the
+                # wrong order: the corpus has declared the opposite endianness
+                # to the one the file was written in. It is a noncharacter, so
+                # it cannot legitimately open a text file, and the declared
+                # codec is not authoritative for this file. Judging EC against
+                # it would score a correct detection as a failure.
+                if decoded.startswith("￾"):
+                    row.FailureCategory = "CorpusByteOrderMislabel"
+                    row.ConversionErrorMessage = (
+                        f"declared {inv.ReferenceEncodingDeclared}, but the "
+                        f"decode opens with U+FFFE - the file is the opposite "
+                        f"byte order")
+                else:
+                    reference_text = strip_bom(decoded)
+                    row.ReferenceTextLength = len(reference_text)
+                    row.ReferenceTextSha256 = hash_text(reference_text)
             except (UnicodeDecodeError, LookupError) as exc:
-                row.FailureCategory = "ReferenceDecodeError"
-                row.ConversionErrorMessage = str(exc)[:200]
+                # The declared codec cannot read its own file. If the opposite
+                # byte order can, the label is an endianness mistake rather
+                # than a corrupt fixture - worth saying which, because the two
+                # call for different action from the corpus maintainer.
+                if opposite_endian_decodes(original_bytes, inv.ReferenceEncoding):
+                    row.FailureCategory = "CorpusByteOrderMislabel"
+                    row.ConversionErrorMessage = (
+                        f"declared {inv.ReferenceEncodingDeclared}, which cannot "
+                        f"decode the file, but the opposite byte order can")
+                else:
+                    row.FailureCategory = "ReferenceDecodeError"
+                    row.ConversionErrorMessage = str(exc)[:200]
 
         prod = production.get(str(bak))
         strict_res = strict_run.get(str(bak))
@@ -854,6 +952,7 @@ PRIMARY_OUTCOMES = [
     "BackupIntegrityFailure", "MissingBackup", "MissingConvertedFile",
     "CorpusRoundTripFailure", "UnknownReferenceEncoding",
     "AuditInfrastructureFailure", "OutOfScope", "NoReferenceEncoding",
+    "CorpusByteOrderMislabel",
 ]
 
 # Outcomes where the audit has no authoritative ground truth. These are
@@ -861,7 +960,7 @@ PRIMARY_OUTCOMES = [
 # claim the evidence does not support.
 UNSCORED_OUTCOMES = {
     "OutOfScope", "NoReferenceEncoding", "UnknownReferenceEncoding",
-    "MetadataConflict",
+    "MetadataConflict", "CorpusByteOrderMislabel",
 }
 
 # Outcomes that indicate the audit itself, not EC, did not hold up.
