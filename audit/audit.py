@@ -124,7 +124,7 @@ class AuditRow:
     DetectionMatch: str = ""
     DetectionBasis: str = ""
     DetectionLabelExact: str = ""
-    DetectionByteEquivalent: str = ""
+    DetectionTextEquivalent: str = ""
 
     ConversionStatus: str = ""
     ConversionErrorStage: str = ""
@@ -861,15 +861,24 @@ def audit_corpus(args, out_dir: Path) -> tuple[list[AuditRow], dict, dict]:
         if inv.ReferenceEncoding and reference_text is not None:
             row.CorpusRoundTrip = str(reproduces_original(inv.ReferenceEncoding))
 
-        # A file whose bytes are identical under both the reference and the
-        # detected codec is a labelling difference, not a decode error - a
-        # pure-ASCII UTF-8 file reported as us-ascii is the common case. This
-        # is established from the bytes, never from corpus compatibility
-        # metadata, which records what a detector may answer rather than what
-        # wrote the file.
+        # A labelling difference that cannot lose anything: decoding the
+        # original bytes with the codec EC named yields the same text as the
+        # reference codec does. A pure-ASCII UTF-8 file reported as us-ascii is
+        # the common case.
+        #
+        # This tests the decode direction deliberately. The obvious alternative
+        # - re-encode the reference text with the detected codec and compare
+        # bytes - proves a round-trip property, not that decoding those bytes
+        # gives the same text, and the two come apart wherever a mapping is
+        # many-to-one. Decoding is also what EC actually does, so it is the
+        # property that determines whether the label mattered.
         if (row.DetectionMatch == "False" and detected_codec
                 and reference_text is not None):
-            row.DetectionByteEquivalent = str(reproduces_original(detected_codec))
+            try:
+                row.DetectionTextEquivalent = str(
+                    strip_bom(original_bytes.decode(detected_codec)) == reference_text)
+            except (UnicodeDecodeError, LookupError):
+                row.DetectionTextEquivalent = "False"
 
         # Binary fixtures declare "not text", so no reference codec exists and
         # the invariant cannot be evaluated. Recorded explicitly rather than
@@ -1149,7 +1158,7 @@ def write_summary_md(rows: list[AuditRow], strictness: dict, recon: dict,
     add("|---|---|---|---|")
     equivalent = sum(1 for r in detected
                      if r.DetectionMatch == "False"
-                     and r.DetectionByteEquivalent == "True")
+                     and r.DetectionTextEquivalent == "True")
 
     add(f"| 1 | Detection accuracy | Did EC name the codec that wrote the bytes? | "
         f"{det_ok}/{len(detected)}"
@@ -1177,11 +1186,11 @@ def write_summary_md(rows: list[AuditRow], strictness: dict, recon: dict,
     if equivalent:
         substantive = len(detected) - det_ok - equivalent
         add(f"Of the {len(detected) - det_ok} detection mismatches, {equivalent} are "
-            f"byte-equivalent labellings — re-encoding the reference text with the "
-            f"codec EC named reproduces the file exactly, so nothing can be lost by "
-            f"the disagreement (a pure-ASCII UTF-8 file reported as us-ascii is the "
-            f"usual case). That leaves {substantive} substantive misdetections. This "
-            f"is established by re-encoding, not from corpus compatibility metadata.")
+            f"text-equivalent labellings — decoding the original bytes with the "
+            f"codec EC named yields the same text as the reference codec, so the "
+            f"disagreement cannot lose anything (a pure-ASCII UTF-8 file reported as "
+            f"us-ascii is the usual case). That leaves {substantive} substantive "
+            f"misdetections, established by decoding rather than from corpus metadata.")
         add("")
 
     add(f"Corpus round-trip control (does the declared codec reproduce the corpus "
