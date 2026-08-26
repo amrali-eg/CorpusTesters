@@ -209,17 +209,20 @@ data-loss risk and total conversion failure, and those are different facts.
 the reference. Full findings in
 [`REVIEW-RESPONSE-STAGE2.md`](REVIEW-RESPONSE-STAGE2.md).
 
-**603 of the 651 files with an available oracle agree completely (92.6%).** Every
-disagreement found is a mapping or profile difference; none is an implementation
-defect.
+**603 of the 651 sampled files with an available oracle agree completely** — an
+agreement rate within the sample, not a corpus estimate. Every disagreement in
+the sample is a mapping or profile difference; none is an implementation defect,
+which is a statement about the fifth of the corpus examined rather than about
+EC's codecs in general.
 
 The wave-dash question is now settled rather than left open: Python and iconv
 give `U+301C`, ICU and .NET give `U+FF5E`. The reference is one of two camps, and
 .NET is not an outlier — it agrees with the standard browsers implement.
 
-**16 of 1,033 (1.5%)** carry a verdict that depends on which implementation is
-treated as reference. That bounds the reference's influence on the published
-figures; none is a case where EC did anything wrong.
+**16 of 1,033 (1.5%)** classifications depended on which implementation was
+treated as the source-text oracle - evidence about oracle sensitivity, not a
+population estimate, since the sample is stratified by taxonomy rather than
+weighted to the corpus. None is a case where EC did anything wrong.
 
 Two limits stated rather than glossed: 374 sampled files have no independent
 oracle at all, and agreement between two implementations is not authority.

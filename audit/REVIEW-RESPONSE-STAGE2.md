@@ -44,16 +44,24 @@ difference.
 | Reference differs from both | 3 |
 | Reference cannot decode | 8 |
 
-**Of the 651 files where at least one independent oracle could be consulted, 603
-(92.6%) agree completely.** The 374 without an oracle are a real coverage limit,
-not a pass: `hp-roman8`, `kz1048`, `ptcp154`, the EBCDIC pages and the DOS code
-pages are absent from one or both, so for those the reference remains
-uncorroborated.
+**Among sampled files for which an independent oracle was available, 603 of 651
+agree completely.** This is an agreement rate within the sample, not an estimate
+that 92.6% of the corpus agrees: the strata were chosen to cover the taxonomy
+evenly, not to reproduce the corpus population, so sample proportions do not
+transfer to the whole.
+
+The 374 without an oracle are a real coverage limit, not a pass: `hp-roman8`,
+`kz1048`, `ptcp154`, the EBCDIC pages and the DOS code pages are absent from one
+or both implementations, so for those the reference remains uncorroborated.
 
 ## Question 2 — what kind of disagreement?
 
-Every disagreement found is a **mapping or profile difference**. None is
-evidence of an implementation defect.
+Every disagreement **in this sample** is a mapping or profile difference; none is
+evidence of an implementation defect. That is a statement about the 1,033 files
+examined — roughly a fifth of the corpus — and about the encodings for which an
+oracle existed. It is not a finding that EC's codecs contain no implementation
+defects, and the 374 files with no available oracle are precisely where such a
+defect would be hardest to see.
 
 | Reference | Other | Codecs | What it is |
 |---|---|---|---|
@@ -86,10 +94,14 @@ is a different encoding answering to the same name rather than a mapping variant
 
 ## Question 3 — does it change any audit classification?
 
-**16 of 1,033 sampled files (1.5%)** carry a verdict that depends on which
-implementation is treated as reference. All are recorded as text-identical; under
-a different oracle's reading of the *source*, the conversion would have altered
-text.
+In the stratified sample, **16 of 1,033 classifications (1.5%)** depended on
+which independent implementation was treated as the source-text oracle. All 16
+were otherwise text-preserving under the audit's Python reference; under another
+oracle's reading of the *source*, the conversion would have altered text.
+
+This is evidence about oracle sensitivity, not a population estimate. The sample
+is stratified by taxonomy rather than weighted to the corpus, so 1.5% does not
+bound the rate across all 5,078 files.
 
 | Codec | Files | Disagreeing oracle |
 |---|---:|---|
@@ -103,10 +115,10 @@ preserved.
 
 **What this means for the published figures.** The 87.47% text-preservation
 result is a claim about preservation *as the reference implementation reads the
-source*. On this sample, roughly 1.5% of preserved verdicts would differ under
-another implementation's mapping. That is a bound on the reference's influence,
-not an error rate — none of the 16 is a case where EncodingChecker did anything
-wrong.
+source*. The sample shows that claim is sensitive to the choice of reference for
+a small minority of files. None of the 16 is a case where EncodingChecker did
+anything wrong; the disagreement is upstream of it, in which published mapping
+each implementation follows.
 
 ## What this does not establish
 
