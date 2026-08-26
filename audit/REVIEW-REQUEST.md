@@ -93,12 +93,12 @@ and .NET spell the same codec differently often enough (`cp949` vs
 comparison scored spelling disagreements as detection errors — worth about ten
 percentage points on its own.
 
-Detection mismatches are further split into **byte-equivalent labellings** and
-substantive misdetections. A labelling is byte-equivalent when re-encoding the
-reference text with the codec EC named reproduces the file exactly, so nothing
-can be lost by the disagreement — a pure-ASCII UTF-8 file reported as `us-ascii`
-is the common case. This is established by re-encoding, never by trusting corpus
-compatibility metadata.
+Detection is reported as seven outcomes rather than a percentage: `ExactMatch`,
+`TextEquivalent` (a different codec giving identical text), `StructurallyAmbiguous`
+(a different reading the bytes could not have decided), `Misdetection` (a
+different reading where the bytes did carry a signal), `NoDotNetCodec`,
+`NotIdentified` and `NoReference`. Equivalence is established by decoding, never
+by trusting corpus compatibility metadata.
 
 Outcomes where no authoritative ground truth exists (repository metadata,
 sidecar directories, encodings with no available codec, corpus self-contradiction)
@@ -214,10 +214,16 @@ byte-equivalent labellings, 80.5% excluding encodings .NET cannot represent;
 strict-decoding 5,020/5,020; 89 codec divergences; text preservation
 4,101/4,741 (86.5%).
 
-The residual risk is **detection, not conversion**. Single-byte code pages are
-mutually decodable — `windows-1252` text is perfectly valid `iso-8859-1` text —
-and nothing in the bytes says which was intended. Forced to the correct codec,
-those files convert exactly.
+The dominant observed end-to-end risk in these corpora is **source-encoding
+identification and ambiguity**, while codec implementation differences and
+strictness defects remain distinct conversion risks. The two interact: a
+detector can choose the right label and the conversion still alter Unicode,
+because the implementation behind that label differs from the reference.
+
+On the identification side, single-byte code pages are mutually decodable —
+`windows-1252` text is perfectly valid `iso-8859-1` text — and nothing in the
+bytes says which was intended. Forced to the correct codec, those files convert
+exactly.
 
 The 89 divergences are dominated by known Microsoft-vs-Unicode mapping
 differences in the CJK code pages (`U+301C` wave dash vs `U+FF5E` fullwidth

@@ -12,9 +12,8 @@ are as interesting as points pushed back on, and both are recorded.
 
 | | Points |
 |---|---:|
-| Accepted and implemented | 4 |
-| Accepted, not yet implemented | 4 |
-| Partially accepted | 2 |
+| Accepted and implemented | 8 |
+| Accepted, not yet implemented | 2 |
 | Pushed back on | 2 |
 
 ---
@@ -116,9 +115,69 @@ that list fails — verified by removing an entry and watching it go red.
 
 ---
 
+### §5 / §11 / §12 / §2 / §13 — Taxonomy and reporting · **accepted, implemented**
+
+Done as one change, because they are one change: separate denominators, a
+coverage axis, BOM as its own property, and binary fixtures in coverage all
+rewrite the same tables.
+
+**Detection is now seven outcomes** rather than a single percentage:
+
+| Outcome | Files |
+|---|---:|
+| `ExactMatch` | 3,756 |
+| `TextEquivalent` | 401 |
+| `StructurallyAmbiguous` | 257 |
+| `Misdetection` | 74 |
+| `NoDotNetCodec` | 297 |
+| `NotIdentified` | 177 |
+| `NoReference` | 116 |
+
+Of 4,488 files where a detector could be judged at all, **4,157 (92.6%)** were
+named exactly or named as a codec giving identical text.
+
+**What the split revealed.** The old figure counted 331 mismatches as one
+undifferentiated number. They are not one thing: **257 are structurally
+ambiguous and only 74 are substantive.** Single-byte code pages map 256 values
+independently, so a file valid in `windows-1252` is equally valid in
+`iso-8859-1`, and no byte inspection decides between them — `cp850 →
+windows-1252`, `koi8-u → koi8-r`, `mac-roman → iso-8859-1`. The substantive 74
+are multi-byte encodings read as single-byte (`euc_jp → windows-1257`,
+`gb18030 → windows-1252`), where the file's sequence structure was available
+evidence and was not used.
+
+**The discriminator is measured, not listed.** A codec is structure-bearing if
+encoding a non-ASCII character takes more than one byte — asked of the codec, so
+one this audit has never seen is still classified correctly. A first attempt
+based on "how many candidate codecs decode this file" was wrong in both
+directions: unconstrained single-byte codecs decode everything, which made real
+misdetections look ambiguous, and codecs absent from the corpus-derived
+candidate list made real ambiguity look like misdetection. That was caught by
+inspecting the resulting pairs rather than by the counts looking plausible.
+
+**Coverage and risk are now separate axes.** A skipped file carries no risk of
+losing text and total risk of not doing the job; those are different facts and
+were previously one. Text-loss is measured over rewritten files alone —
+**3,455 / 3,950 preserved (87.47%)** — and the 145 files that differ without
+having been rewritten (UTF-7 left as ASCII) are counted under coverage, since
+the failure there is that nothing happened, not that conversion damaged
+anything.
+
+**BOM is reported as its own property**, since converting UTF-8-with-BOM to
+UTF-8-without preserves every character while changing the serialization:
+1,300 / 1,300 detected BOM states match their reference.
+
+The integrity checker was extended to grade the new taxonomy, recomputing
+structure-bearing independently rather than reading the audit's own answer — a
+taxonomy graded against its own definition would agree with itself whatever the
+definition had become. Verified to bite by relabelling a `euc_jp` row as
+ambiguous and watching it fail.
+
+---
+
 ## Accepted, not yet implemented
 
-### §5 — Detection accuracy needs a different denominator
+### §5 — remaining piece: candidate sets per file
 
 Agreed that `3756/4961` mixes situations that are not comparable. The proposed
 taxonomy (reference-grounded → exact / text-equivalent / genuine misdetection /
@@ -130,7 +189,7 @@ whether two codecs could both have produced these bytes. That is computable —
 decode under each candidate and compare — but it needs a candidate set per file,
 which the audit does not currently retain.
 
-### §11 / §12 — Coverage and risk as separate reporting
+### §11 / §12 — superseded, see above
 
 Agreed. Excluding unscored outcomes from *accuracy* is honest, but a reader
 seeing `86.5% text preservation` should also see how much of the corpus never

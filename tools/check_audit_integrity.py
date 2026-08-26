@@ -59,6 +59,30 @@ ACKNOWLEDGED_AMBIGUITIES = {
     ("utf-32-be", "utf-32"),
 }
 
+DETECTION_OUTCOMES = {
+    "ExactMatch", "TextEquivalent", "StructurallyAmbiguous", "Misdetection",
+    "NoDotNetCodec", "NotIdentified", "NoReference", "",
+}
+
+
+def structure_bearing(codec: str) -> bool:
+    """Whether a codec constrains byte sequences, i.e. is multi-byte.
+
+    Recomputed here rather than read from the audit's own output: a taxonomy
+    that graded itself against its own definition would agree with itself no
+    matter what the definition had become.
+    """
+    if not codec:
+        return False
+    for ch in ("é", "世", "Ж"):
+        try:
+            if len(ch.encode(codec)) > 1:
+                return True
+        except (UnicodeEncodeError, LookupError):
+            continue
+    return False
+
+
 UNSCORED = {
     "OutOfScope", "NoReferenceEncoding", "UnknownReferenceEncoding",
     "MetadataConflict", "CorpusByteOrderMislabel", "ReferenceDecodeError",
@@ -174,6 +198,52 @@ def check_row_consistency(corpus: str, rows: list[dict], report: Report) -> None
         # A converted file that differs in bytes cannot also be a no-op.
         if outcome == "NoOpMislabeled" and r["ByteIdentical"] != "True":
             report.fail("outcome", f"{corpus}/{path}: NoOpMislabeled but bytes changed")
+            failures += 1
+
+        # --- detection taxonomy -------------------------------------------
+        detection = r.get("DetectionOutcome", "")
+
+        if detection not in DETECTION_OUTCOMES:
+            report.fail("detection",
+                        f"{corpus}/{path}: unknown detection outcome {detection!r}")
+            failures += 1
+
+        # Each outcome asserts something checkable about the same row.
+        if detection == "ExactMatch" and r["DetectionMatch"] != "True":
+            report.fail("detection",
+                        f"{corpus}/{path}: ExactMatch but DetectionMatch="
+                        f"{r['DetectionMatch']!r}")
+            failures += 1
+
+        if detection == "TextEquivalent":
+            if r["DetectionMatch"] != "False":
+                report.fail("detection",
+                            f"{corpus}/{path}: TextEquivalent but the codecs match")
+                failures += 1
+            elif r["DetectionTextEquivalent"] != "True":
+                report.fail("detection",
+                            f"{corpus}/{path}: TextEquivalent without equivalent text")
+                failures += 1
+
+        # Ambiguity is a claim that neither codec constrained the bytes. A
+        # multi-byte encoding on either side contradicts it.
+        if detection == "StructurallyAmbiguous":
+            for codec in (r["ReferenceEncoding"], r["DetectedEncoding"]):
+                if structure_bearing(codec):
+                    report.fail("detection",
+                                f"{corpus}/{path}: StructurallyAmbiguous but "
+                                f"{codec!r} is multi-byte and does constrain the bytes")
+                    failures += 1
+                    break
+
+        if detection == "NoDotNetCodec" and r["ReferenceCodePage"]:
+            report.fail("detection",
+                        f"{corpus}/{path}: NoDotNetCodec but a code page is recorded")
+            failures += 1
+
+        if detection == "NoReference" and r["ReferenceEncoding"]:
+            report.fail("detection",
+                        f"{corpus}/{path}: NoReference but a reference codec is recorded")
             failures += 1
 
         # Nothing should be left uncompared without a reason.

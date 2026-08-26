@@ -126,6 +126,16 @@ class AuditRow:
     DetectionLabelExact: str = ""
     DetectionTextEquivalent: str = ""
 
+    # Detection taxonomy: one of ExactMatch, TextEquivalent,
+    # StructurallyAmbiguous, Misdetection, NoDotNetCodec, NoReference,
+    # NotIdentified. Separated from the pass/fail above because "the detector
+    # was wrong" and "the bytes could not identify the file" are different
+    # claims and were previously one number.
+    DetectionOutcome: str = ""
+    PlausibleCodecCount: int = -1
+    DistinctReadings: int = -1
+    PlausibleCodecs: str = ""
+
     ConversionStatus: str = ""
     ConversionErrorStage: str = ""
     ConversionErrorType: str = ""
@@ -541,6 +551,84 @@ def phase0(encodings: list[str]) -> dict[str, dict]:
     return {p["Encoding"]: p for p in probes}
 
 
+def is_structure_bearing(codec: str) -> bool:
+    """Whether this codec constrains the *sequence* of bytes, not just their values.
+
+    A multi-byte codec imposes structure: valid EUC-JP or UTF-8 is improbable by
+    accident, so a file decoding cleanly under one is real evidence for it. A
+    single-byte codec imposes almost none - it maps 256 values independently, so
+    nearly every byte sequence is "valid" and being valid says nothing.
+
+    That difference is what separates a detector that ignored available evidence
+    from one facing a genuinely undecidable choice, and it is why single-byte
+    code pages are the hazard: windows-1252 text is perfectly good iso-8859-1
+    text and no amount of looking at the bytes will say which was meant.
+
+    Determined by asking the codec, not from a list, so a codec this audit has
+    never seen is still classified correctly.
+    """
+    try:
+        # A non-ASCII character needing more than one byte means the encoding
+        # carries sequence structure.
+        for ch in ("é", "世", "Ж"):
+            try:
+                if len(ch.encode(codec)) > 1:
+                    return True
+            except (UnicodeEncodeError, LookupError):
+                continue
+    except Exception:
+        return False
+    return False
+
+
+def plausible_codecs(data: bytes, candidates: tuple[str, ...],
+                     limit: int = 64 * 1024) -> list[str]:
+    """Codecs that decode these bytes without error, in candidate order.
+
+    The evidence available to a detector, expressed as a set. A byte sequence
+    that decodes cleanly under eight single-byte code pages carries no
+    *structural* signal distinguishing them - only statistical heuristics can
+    separate those eight, and heuristics are exactly what is unreliable on short
+    or ASCII-heavy input.
+
+    This is what makes "the detector was wrong" and "the file could not be
+    identified from its bytes" different claims rather than one number.
+
+    Capped at `limit` bytes: a codec that decodes the first 64 KiB cleanly is
+    plausible enough for this purpose, and decoding whole large files under
+    forty codecs would dominate the run.
+    """
+    sample = data[:limit]
+    if not sample:
+        return []
+
+    found: list[str] = []
+    for codec in candidates:
+        try:
+            sample.decode(codec)
+        except (UnicodeDecodeError, LookupError, ValueError):
+            continue
+        found.append(codec)
+    return found
+
+
+def distinguishable_by_text(data: bytes, codecs_: list[str],
+                            limit: int = 64 * 1024) -> int:
+    """How many *distinct texts* the plausible codecs produce.
+
+    Two codecs that decode the same bytes to the same text are not a hazard, so
+    ambiguity is counted in distinct readings rather than in candidate names.
+    """
+    sample = data[:limit]
+    texts = set()
+    for codec in codecs_:
+        try:
+            texts.add(sample.decode(codec))
+        except (UnicodeDecodeError, LookupError, ValueError):
+            continue
+    return len(texts)
+
+
 def net_name_for(strictness: dict[str, dict], *names: str) -> str | None:
     """First spelling of these names that .NET can actually construct."""
     for candidate in net_name_candidates(*names):
@@ -578,6 +666,67 @@ def first_difference(a: str, b: str) -> tuple[int, str, str, str, str, str, str]
     before = a[max(0, idx - 20):idx]
     after = a[idx + 1:idx + 21]
     return idx, ref_cp, con_cp, ref_ch, con_ch, before, after
+
+
+def classify_detection(row: AuditRow, inv: InventoryRow,
+                       detected_codec: str | None, reference_text: str | None,
+                       original_bytes: bytes,
+                       candidates: tuple[str, ...]) -> None:
+    """Place the detection result in the taxonomy, and record the evidence.
+
+    Seven outcomes, because a single accuracy figure was averaging together
+    situations that call for different responses:
+
+      ExactMatch             the codec that wrote the file, under any spelling
+      TextEquivalent         a different codec, same resulting text
+      StructurallyAmbiguous  a different reading, but nothing in the bytes could
+                             have told the detector which was right
+      Misdetection           a different reading where the bytes did carry a
+                             distinguishing signal
+      NoDotNetCodec          the reference encoding has no code page at all, so
+                             no detector on this platform could have named it
+      NoReference            no authoritative encoding to judge against
+      NotIdentified          the detector named nothing and the file was skipped
+    """
+    if not inv.ReferenceEncoding:
+        row.DetectionOutcome = "NoReference"
+        return
+
+    if not row.ReferenceCodePage:
+        # EC cannot construct this encoding, so naming it was never possible.
+        row.DetectionOutcome = "NoDotNetCodec"
+        return
+
+    if not detected_codec:
+        row.DetectionOutcome = "NotIdentified"
+        return
+
+    if row.DetectionMatch == "True":
+        row.DetectionOutcome = "ExactMatch"
+        return
+
+    if row.DetectionTextEquivalent == "True":
+        row.DetectionOutcome = "TextEquivalent"
+        return
+
+    # The readings differ. Whether that is the detector's fault depends on
+    # whether the bytes carried anything to distinguish them.
+    plausible = plausible_codecs(original_bytes, candidates)
+    row.PlausibleCodecCount = len(plausible)
+    row.DistinctReadings = distinguishable_by_text(original_bytes, plausible)
+    row.PlausibleCodecs = ",".join(plausible[:8])
+
+    # Evidence is a property of the codecs involved, not of how many names
+    # happen to be in the candidate list. If either codec carries sequence
+    # structure, the bytes could have discriminated and the detector had
+    # something to go on. If both are single-byte maps, they could not: every
+    # byte is valid in both, and only statistical heuristics remain - exactly
+    # what is unreliable on short or ASCII-heavy input.
+    evidence_available = (is_structure_bearing(inv.ReferenceEncoding)
+                          or is_structure_bearing(detected_codec))
+
+    row.DetectionOutcome = ("Misdetection" if evidence_available
+                            else "StructurallyAmbiguous")
 
 
 def classify(row: AuditRow) -> str:
@@ -663,6 +812,16 @@ def audit_corpus(args, out_dir: Path) -> tuple[list[AuditRow], dict, dict]:
             universe += net_name_candidates(label)
 
     strictness = phase0(universe)
+
+    # The candidate space a detector is choosing from: encodings this corpus
+    # set actually contains, that both Python can decode with and .NET can
+    # construct. Deliberately corpus-derived rather than a hand-written list,
+    # so it cannot drift from what is being measured.
+    candidate_codecs = tuple(sorted({
+        r.ReferenceEncoding for r in inventory
+        if r.ReferenceEncoding and code_page_of(
+            strictness, r.ReferenceEncodingDeclared, r.ReferenceEncoding)
+    }))
 
     # EC's own decode of each backup, in both constructions. The difference
     # between them is what proves silent decode loss instead of inferring it.
@@ -879,6 +1038,9 @@ def audit_corpus(args, out_dir: Path) -> tuple[list[AuditRow], dict, dict]:
                     strip_bom(original_bytes.decode(detected_codec)) == reference_text)
             except (UnicodeDecodeError, LookupError):
                 row.DetectionTextEquivalent = "False"
+
+        classify_detection(row, inv, detected_codec, reference_text,
+                           original_bytes, candidate_codecs)
 
         # Binary fixtures declare "not text", so no reference codec exists and
         # the invariant cannot be evaluated. Recorded explicitly rather than
@@ -1197,17 +1359,132 @@ def write_summary_md(rows: list[AuditRow], strictness: dict, recon: dict,
         f"bytes?): {rt_ok}/{len(rt)}. A failure here is a corpus defect, not an EC one.")
     add("")
 
+    # ---- Detection quality --------------------------------------------
+    detection = Counter(r.DetectionOutcome for r in rows)
+    judged = sum(detection[k] for k in
+                 ("ExactMatch", "TextEquivalent", "StructurallyAmbiguous",
+                  "Misdetection"))
+
+    add("## Detection quality")
+    add("")
+    add("Split seven ways rather than reported as one percentage, because these")
+    add("call for different responses and averaging them hides the ones that")
+    add("matter.")
+    add("")
+    add("| Outcome | Files | Meaning |")
+    add("|---|---:|---|")
+    add(f"| `ExactMatch` | {detection['ExactMatch']} | "
+        f"The codec that wrote the file, under any spelling |")
+    add(f"| `TextEquivalent` | {detection['TextEquivalent']} | "
+        f"A different codec, identical resulting text — nothing can be lost |")
+    add(f"| `StructurallyAmbiguous` | {detection['StructurallyAmbiguous']} | "
+        f"A different reading, but the bytes could not have said which is right |")
+    add(f"| `Misdetection` | {detection['Misdetection']} | "
+        f"A different reading where the bytes did carry a distinguishing signal |")
+    add(f"| `NoDotNetCodec` | {detection['NoDotNetCodec']} | "
+        f"No code page exists, so no detector on this platform could name it |")
+    add(f"| `NotIdentified` | {detection['NotIdentified']} | "
+        f"The detector named nothing; the file was left untouched |")
+    add(f"| `NoReference` | {detection['NoReference']} | "
+        f"No authoritative encoding to judge against |")
+    add("")
+
+    if judged:
+        good = detection["ExactMatch"] + detection["TextEquivalent"]
+        add(f"Of the {judged} files where a detector could be judged at all, "
+            f"**{good} ({100 * good / judged:.1f}%)** were named exactly or "
+            f"named as a codec giving identical text.")
+        add("")
+        add(f"The remaining {judged - good} split into "
+            f"**{detection['StructurallyAmbiguous']} structurally ambiguous** and "
+            f"**{detection['Misdetection']} substantive**. That distinction is the "
+            f"point: single-byte code pages map 256 values independently, so a file "
+            f"valid in `windows-1252` is equally valid in `iso-8859-1` and no "
+            f"amount of byte inspection decides between them. A multi-byte encoding "
+            f"does constrain its sequences, so failing to recognise one is a "
+            f"detector error rather than an impossible choice.")
+        add("")
+
+    # ---- Operational coverage -----------------------------------------
+    add("## Operational coverage")
+    add("")
+    add("What happened to the files, independent of whether it was correct. A")
+    add("reader deciding whether to run this tool needs both: a skipped file")
+    add("carries no risk of losing text and every risk of not doing the job.")
+    add("")
+    rewritten = sum(1 for r in rows
+                    if r.ConversionStatus == "Converted" and r.ByteIdentical == "False")
+    add("| Outcome | Files | Share |")
+    add("|---|---:|---:|")
+    for label, count in (
+            ("Rewritten", rewritten),
+            ("Already in the target encoding", status.get("Unchanged", 0)),
+            ("Skipped — encoding not identified", status.get("Skipped", 0)),
+            ("Refused with an error", status.get("Error", 0)),
+            ("Not applicable — no reference or out of scope",
+             detection["NoReference"] + outcome.get("OutOfScope", 0))):
+        add(f"| {label} | {count} | {100 * count / len(rows):.1f}% |")
+    add("")
+
+    # ---- Text-loss risk -----------------------------------------------
+    add("## Text-loss risk")
+    add("")
+    add("Only a file that was actually rewritten can have lost anything, so this")
+    add("is measured over those alone. Counting skipped files as successes would")
+    add("flatter it; counting them as failures would misattribute a coverage gap")
+    add("to the converter.")
+    add("")
+    rewritten_rows = [r for r in rows
+                      if r.ConversionStatus == "Converted"
+                      and r.ByteIdentical == "False"]
+    changed = sum(1 for r in rewritten_rows if r.TextIdentical == "False")
+    preserved = sum(1 for r in rewritten_rows if r.TextIdentical == "True")
+    uncompared = len(rewritten_rows) - changed - preserved
+
+    add(f"- Rewritten: {len(rewritten_rows)}")
+    add(f"- Text preserved: {preserved}")
+    add(f"- Text changed: {changed}")
+    if uncompared:
+        add(f"- Not comparable (no reference codec): {uncompared}")
+    if preserved + changed:
+        add(f"- **Preservation among rewritten and comparable files: "
+            f"{100 * preserved / (preserved + changed):.2f}%**")
+    add("")
+
+    # Elsewhere in the corpus, text differs on files that were never rewritten -
+    # a UTF-7 file EC left alone still holds UTF-7 escapes rather than text.
+    # That is a coverage failure, not a conversion one, and is counted there.
+    untouched_diff = sum(1 for r in rows
+                         if r.TextIdentical == "False" and r not in rewritten_rows)
+    if untouched_diff:
+        add(f"A further {untouched_diff} file(s) differ from their reference text "
+            f"without having been rewritten - EC left the bytes alone, so the "
+            f"difference is that the file was never converted, not that "
+            f"conversion damaged it. Counted under coverage rather than here.")
+        add("")
+
+    # ---- BOM policy ----------------------------------------------------
+    bom_rows = [r for r in rows if r.ReferenceBOM in ("BOM", "NoBOM")
+                and r.DetectedBOM in ("BOM", "NoBOM")]
+    if bom_rows:
+        bom_ok = sum(1 for r in bom_rows if r.ReferenceBOM == r.DetectedBOM)
+        add("## BOM policy")
+        add("")
+        add("Reported separately from text preservation, because they are")
+        add("independent properties: converting UTF-8 with a BOM to UTF-8 without")
+        add("one preserves every character while changing the serialization.")
+        add("")
+        add(f"- Files with a declared BOM state: {len(bom_rows)}")
+        add(f"- Detected BOM state matches the reference: {bom_ok} "
+            f"({100 * bom_ok / len(bom_rows):.1f}%)")
+        add("")
+
     add("## Corpus totals")
     add("")
     add(f"- Files discovered: {len(rows)}")
     add(f"- Scored: {len(scored)}")
     add(f"- Unscored (no authoritative ground truth): {unscored}")
-    add(f"- Converted: {status['Converted']}")
-    add(f"- Skipped: {status['Skipped']}")
-    add(f"- Errors: {status['Error']}")
     add(f"- Compared: {compared}")
-    add(f"- Text identical: {identical}")
-    add(f"- Text different: {recon['textDifferent']}")
     add("")
 
     if unscored:
