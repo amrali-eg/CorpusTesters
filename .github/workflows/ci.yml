@@ -14,9 +14,9 @@ jobs:
     runs-on: windows-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: "8.0.x"
 
@@ -48,9 +48,9 @@ jobs:
     runs-on: windows-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: "8.0.x"
 
@@ -73,18 +73,18 @@ jobs:
 
     steps:
       - name: Check out CorpusTesters
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           path: CorpusTesters
 
       - name: Check out EncodingChecker
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: amrali-eg/EncodingChecker
           path: EncodingChecker
 
       - name: Check out LineEndingNormalizer
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: amrali-eg/LineEndingNormalizer
           path: LineEndingNormalizer
