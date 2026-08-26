@@ -1,0 +1,10 @@
+# Normalize to CRLF in the working tree, matching the other repos in this set.
+* text=auto eol=crlf
+
+# Shell scripts must keep LF: CRLF makes the shebang line unparseable.
+*.sh text eol=lf
+
+# Binary fixtures must never be touched by line-ending conversion.
+*.png binary
+*.zip binary
+*.sqlite binary

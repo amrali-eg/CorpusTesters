@@ -2,4 +2,5 @@
   <Project Path="CorpusTesting/CorpusTesting.csproj" />
   <Project Path="UnicodeSuiteTester/UnicodeSuiteTester.csproj" />
   <Project Path="ChardetDataTester/ChardetDataTester.csproj" />
+  <Project Path="audit/ECDiag/ECDiag.csproj" />
 </Solution>
