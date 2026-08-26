@@ -26,10 +26,17 @@ jobs:
       - name: Build
         run: dotnet build CorpusTesters.slnx --configuration Release --no-restore
 
-      - name: Audit driver is syntactically valid
+      - name: Audit driver and tools are syntactically valid
         shell: bash
         run: |
           python -m compileall -q audit/audit.py tools/ audit/tools/
+
+      - name: Audit integrity invariants are self-consistent
+        shell: bash
+        run: |
+          # Runs without a corpus: exercises the checker's own logic so a
+          # broken invariant is caught even where the corpora are unavailable.
+          python tools/check_audit_integrity.py --help > /dev/null
 
   codec-strictness:
     # Pins the platform behaviour the whole audit rests on. Needs no corpus, so

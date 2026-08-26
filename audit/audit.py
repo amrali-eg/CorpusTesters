@@ -708,7 +708,10 @@ def audit_corpus(args, out_dir: Path) -> tuple[list[AuditRow], dict, dict]:
 
         current = path.read_bytes() if path.is_file() else b""
         row.ConvertedByteLength = len(current)
-        row.ConvertedSha256 = sha256_bytes(current) if current else ""
+        # Hash unconditionally: a zero-byte result is a real outcome with a
+        # real digest, and recording "" for it made an unchanged empty file
+        # look like its hashes disagreed.
+        row.ConvertedSha256 = sha256_bytes(current)
 
         if bak.is_file():
             backup_bytes = bak.read_bytes()
@@ -809,8 +812,17 @@ def audit_corpus(args, out_dir: Path) -> tuple[list[AuditRow], dict, dict]:
         if row.ECStrictDecodeOutcome == "Throws" and prod and not prod.get("FailureStage"):
             row.ECImplementationDefect = "NonStrictDecoderAcceptedInvalidBytes"
 
+        # An empty output is a real result, not a missing one: a file holding
+        # nothing but a BOM correctly converts to zero bytes when the target
+        # carries no preamble. Skipping the decode here left it uncompared and
+        # it fell through to CodecDivergence.
         converted_text = None
-        if current and row.FailureCategory != "ReferenceDecodeError":
+        if (row.ConversionStatus == "Converted" and not current
+                and row.FailureCategory != "ReferenceDecodeError"):
+            converted_text = ""
+            row.ConvertedTextLength = 0
+            row.ConvertedTextSha256 = hash_text("")
+        elif current and row.FailureCategory != "ReferenceDecodeError":
             try:
                 converted_text = strip_bom(current.decode("utf-8"))
                 row.ConvertedTextLength = len(converted_text)
@@ -820,7 +832,14 @@ def audit_corpus(args, out_dir: Path) -> tuple[list[AuditRow], dict, dict]:
                 if not row.ConversionErrorMessage:
                     row.ConversionErrorMessage = str(exc)[:200]
 
-        if reference_text is not None and converted_text is not None:
+        # A file EC declined to identify cannot be compared: its bytes are
+        # untouched, so reading them as the target codec compares the reference
+        # against the *source* text and always differs, which says nothing about
+        # conversion fidelity. "Unchanged" is a definite result - EC recognised
+        # the file and found it already in the target encoding - so it is
+        # compared like any conversion.
+        if (reference_text is not None and converted_text is not None
+                and row.ConversionStatus in ("Converted", "Unchanged")):
             identical = reference_text == converted_text
             row.TextIdentical = str(identical)
             if not identical:
