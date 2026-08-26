@@ -26,6 +26,7 @@ import codecs
 import csv
 import hashlib
 import json
+import os
 import platform
 import re
 import shutil
@@ -40,10 +41,15 @@ AUDIT_VERSION = "1.0.0"
 
 REPO = Path(__file__).resolve().parent
 ECDIAG = REPO / "ECDiag" / "bin" / "Release" / "net8.0" / "ECDiag.exe"
-EC_EXE = Path(r"C:\Users\Amr\source\repos\EncodingChecker-master"
-              r"\sources\EncodingChecker\bin\Release\net10.0-windows\EncodingChecker.exe")
+# Where EncodingChecker is checked out and built. Set EC_REPO if your clone
+# lives elsewhere; EC_EXE is derived from it unless set explicitly.
+EC_REPO = Path(os.environ.get(
+    "EC_REPO", REPO.parent.parent / "EncodingChecker-master"))
+EC_EXE = Path(os.environ.get(
+    "EC_EXE",
+    EC_REPO / "sources" / "EncodingChecker" / "bin" / "Release"
+    / "net10.0-windows" / "EncodingChecker.exe"))
 EC_ASSEMBLY = EC_EXE.with_suffix(".dll")
-EC_REPO = Path(r"C:\Users\Amr\source\repos\EncodingChecker-master")
 
 # Exit codes (section 22).
 EXIT_OK = 0

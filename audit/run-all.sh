@@ -9,7 +9,11 @@
 set -euo pipefail
 
 LABEL="${1:-baseline}"
-CORPUS_ROOT="${CORPUS_ROOT:-C:/Users/Amr/Desktop/Corpus}"
+if [ -z "${CORPUS_ROOT:-}" ]; then
+    echo "CORPUS_ROOT is not set. Point it at the directory holding the four" >&2
+    echo "corpora; see README.md for where to obtain them." >&2
+    exit 2
+fi
 WORK="${WORK:-$TEMP/ec-audit-work/$LABEL}"
 OUT="runs/$LABEL"
 
