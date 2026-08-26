@@ -1,0 +1,80 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    # Windows to match the platform the tools under test target, and because the
+    # legacy code pages this repository exercises come from
+    # CodePagesEncodingProvider.
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Restore
+        run: dotnet restore CorpusTesters.slnx
+
+      - name: Build
+        run: dotnet build CorpusTesters.slnx --configuration Release --no-restore
+
+      - name: Audit driver is syntactically valid
+        shell: bash
+        run: |
+          python -m compileall -q audit/audit.py tools/ audit/tools/
+
+  codec-strictness:
+    # Pins the platform behaviour the whole audit rests on. Needs no corpus, so
+    # it runs on every push rather than only when someone remembers to audit.
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Build ECDiag
+        run: dotnet build audit/ECDiag/ECDiag.csproj --configuration Release
+
+      - name: Probe codec strictness
+        shell: bash
+        run: python tools/check_codec_strictness.py
+
+  detector-drift:
+    # The detector is copy-pasted across three repositories and nothing else
+    # enforces that the copies agree. A defect fixed in one has silently
+    # survived in the other two before; this makes that a build failure.
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out CorpusTesters
+        uses: actions/checkout@v4
+        with:
+          path: CorpusTesters
+
+      - name: Check out EncodingChecker
+        uses: actions/checkout@v4
+        with:
+          repository: amrali-eg/EncodingChecker
+          path: EncodingChecker
+
+      - name: Check out LineEndingNormalizer
+        uses: actions/checkout@v4
+        with:
+          repository: amrali-eg/LineEndingNormalizer
+          path: LineEndingNormalizer
+
+      - name: Compare shared detector sources
+        run: |
+          python CorpusTesters/tools/check_detector_drift.py \
+            EncodingChecker LineEndingNormalizer CorpusTesters

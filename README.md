@@ -396,11 +396,47 @@ being asked, and say which one it is.
 copies of the same files in EncodingChecker and LineEndingNormalizer.
 `TextValidation.cs` is byte-identical across all three apart from the namespace.
 
-Nothing enforces that. A defect in one copy is almost certainly present in the
-other two — which is exactly how the strict-fallback defect reached all three at
-once and needed three separate fixes. When changing any of these files, check the
-other two repositories before assuming the change is complete, and prefer changes
-that keep `TextValidation.cs` identical across them.
+A defect in one copy is almost certainly present in the other two — which is
+exactly how the strict-fallback defect reached all three at once and needed three
+separate fixes.
+
+CI now enforces the sync. `tools/check_detector_drift.py` checks out all three
+repositories and fails the build if they have diverged:
+
+- **Whole file** — `TextValidation.cs` and `UnicodeDetector.cs` must be identical
+  everywhere, modulo the namespace declaration and a `using System;` that is
+  present only where the project does not enable `ImplicitUsings`. Every other
+  using is compared, so a genuinely divergent import is still caught.
+- **Named member** — `TextEncoding.cs` legitimately differs, since each
+  repository adds its own helpers, so only members that must stay in lockstep are
+  compared by name. Currently `TextEncoding.Strict`.
+
+On drift it names which repository is the odd one out and prints the diff. Run it
+locally before pushing a change to any of these files:
+
+```bash
+python tools/check_detector_drift.py ../EncodingChecker ../LineEndingNormalizer .
+```
+
+## Continuous integration
+
+| Job | Runner | What it guards |
+|---|---|---|
+| `build` | windows-latest | The solution compiles; the audit driver and tools are syntactically valid |
+| `codec-strictness` | windows-latest | The platform codec behaviour every audit conclusion rests on |
+| `detector-drift` | ubuntu-latest | The three copies of the detector still agree |
+
+`codec-strictness` needs no corpus, so it runs on every push rather than only
+when someone remembers to audit. It pins both halves of the finding that produced
+this repository's main result: that assigning `Decoder.Fallback` after
+`GetDecoder()` does **not** take effect for `CodePagesEncodingProvider`
+encodings, and that the six code pages LineEndingNormalizer's Unicode path
+depends on **do** honour it. If the platform ever changes either, the audit's
+classifications would silently change meaning — the build fails instead.
+
+The corpus runs themselves are not in CI: they need several hundred megabytes of
+external corpora and a built EncodingChecker. They are run deliberately, and
+their results are published in this README.
 
 ## What safety this actually buys
 
