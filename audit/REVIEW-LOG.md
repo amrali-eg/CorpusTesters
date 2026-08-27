@@ -321,6 +321,62 @@ review prompted it.
 
 ---
 
+## Test-harness defect — concurrent callback collection
+
+**2026-08-27, EncodingChecker.** A CI failure on master reported
+`AFileChangedAfterTheConfirmation_StopsTheWholeRun` as `Converted` where it expected
+`PlanWentStale`. The message blamed the product. It was the harness.
+
+`ScanEngine.ScanDirectory` and `ConvertFiles` invoke `onEntry` concurrently from worker
+threads and document that the caller must synchronise. Both production callers use a
+`ConcurrentBag`. Twenty test files passed `List<T>.Add`.
+
+Measured before fixing, with a throwaway probe scanning 200 files 40 times and comparing
+a `List` collector against a `ConcurrentBag` over identical scans:
+
+```text
+attempts with a wrong count: 3/40; deltas: 1,1,2
+```
+
+The chain, which is why the failure message was misleading:
+
+```text
+concurrent callback
+  -> test collects with List<T>.Add
+  -> entries silently lost
+  -> lost file never enters the plan
+  -> FindStaleFiles only inspects files a plan schedules
+  -> nothing to find stale
+  -> "Converted"
+```
+
+**Why this belongs in an audit log rather than a changelog.** A dropped entry does not
+throw. It removes a file from what the test then asserts about, so the test passes while
+asserting less than it claims. That is the same failure mode as every other finding here:
+an internally plausible measurement path that is unsound, and that reports success. It is
+the audit's own instruments failing the way the first-stage audit's did — the wave-dash
+codec resolution, the language-tag misreading, the byte-equivalence property that tested
+the wrong thing. The count of passing tests was never the evidence; what the tests
+actually exercised was, and for an unknown number of runs that was less than it appeared.
+
+Only the one test whose subject *was* the dropped file failed visibly. How often the
+others ran weaker than they read cannot be recovered retrospectively — only prevented.
+
+**Corrected.** `EntrySink` collects into a `ConcurrentBag` and enumerates in path order.
+Every concurrent callback in the suite uses it. The stale-plan test now asserts that both
+files reached the plan before asserting the outcome, so a regression fails on the
+membership rather than changing the result. And `HarnessInvariantTests` enforces the rule
+by reading the test sources: a `List`'s `Add` handed to `ScanDirectory` or `ConvertFiles`
+fails the build, scoped to those two calls so a sequential enumeration is not flagged.
+The rule was verified against a deliberately reintroduced violation, and asserts that it
+found call sites to examine at all — a check that silently matches nothing looks exactly
+like one that passes.
+
+No production code was involved. The concurrent contract is correct and documented; the
+tests were not honouring it.
+
+---
+
 ## Reproducing any claim in this log
 
 ```bash
