@@ -483,6 +483,87 @@ tests, zero failures.
 
 ---
 
+## Corpus finding — unsupported UTF-7 crashed CLI validation
+
+**2026-08-31, EncodingChecker.** The first real chardet-corpus run after the
+v3.9 audit changes supplied its declared `utf-7` source through the CLI. On .NET
+5 and later, constructing UTF-7 throws `NotSupportedException` (SYSLIB0001).
+Both defensive conversion-option checks caught only `ArgumentException`:
+
+```text
+-From utf-7  -Target utf-8 -> unhandled exception, stack trace, exit 127
+-Target utf-7              -> same failure
+```
+
+**Corrected.** Both `-From` and `-Target` validation now handle unsupported and
+unrecognized codecs as normal usage errors. UTF-7 produces a clear
+runtime-unsupported message and exit code 1. `-Validate utf-7` remains accepted
+because validation mode compares detector labels and does not construct the
+disabled codec.
+
+Regression coverage exercises both call sites, their process-level exit
+contract, and the unaffected validation mode. The full EC Release suite passes:
+451 tests, zero failures.
+
+This finding came from declared data in the chardet corpus rather than a
+synthetic case, demonstrating why unsupported reference encodings must remain
+in operational audit coverage even when they cannot be scored for conversion.
+
+---
+
+## Corpus finding — legacy-source picker offered unavailable codecs
+
+**2026-08-31, EncodingChecker.** Runtime probing found that 8 of the 51 declared
+charset names used to populate EC's source picker could not be constructed on
+.NET 10. The main form filtered these names, but the conversion-review dialog
+copied the unfiltered declaration. A user resolving a legacy refusal could
+therefore select a codec such as `iso-8859-16` only to receive a second, safe but
+avoidable "not available" refusal. The alias `cp949` also failed construction
+while its canonical runtime-supported equivalent `ks_c_5601-1987` worked.
+
+**Corrected.** `TextEncoding` now resolves the declaration once against the
+active runtime, canonicalizes successful entries by code-page identity, and
+shares that read-only result with both GUI consumers. Unsupported names are not
+offered, and aliases cannot produce duplicate choices. Conversion still performs
+its own strict codec validation; the UI correction does not weaken the safety
+boundary.
+
+A dialog-level regression verifies that its choices exactly match the shared
+runtime list, are unique, and can all be constructed. The full EC Release suite
+passes: 453 tests, zero failures.
+
+---
+
+## Historical correction — commit 0c7120f bundled unrelated files
+
+**2026-08-31.** Commit `0c7120f` ("Measure EC v3.9.0, which no longer converts
+legacy text unaided") staged its changes with `git add -A` and so committed three
+files that were not part of that work and are not described by its message:
+
+```text
+CorpusTesting/TextEncoding.cs      pre-existing uncommitted work
+CorpusTesting/TextValidation.cs    pre-existing uncommitted work
+audit/REVIEW-LOG.md                pre-existing uncommitted work
+```
+
+The two `CorpusTesting` files were the shared-detector parity sync; the
+`REVIEW-LOG.md` change was an unrelated log entry. All three were already in the
+working tree when that commit was made, from concurrent work by another author.
+The commit's own subject describes only the audit changes to `audit/audit.py`.
+
+Nothing was lost and no content is in question — the correction is to the record,
+not to the code. The commit is not being split: it is already on local and remote
+`main`, and rewriting public history to fix a provenance and message problem
+costs more than it repairs. This note is the repair.
+
+**Why it happened, since the same shape recurs here.** This repository is edited
+by more than one author at a time, so the working tree routinely holds changes
+the committer did not make. `git add -A` cannot tell them apart. Stage explicit
+paths and check `git status` afterwards; the cost of that habit is a few seconds
+and the cost of skipping it is a commit that misattributes someone else's work.
+
+---
+
 ## Reproducing any claim in this log
 
 ```bash
