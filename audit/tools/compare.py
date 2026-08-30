@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import sys
 from collections import Counter, defaultdict
 from pathlib import Path
 
@@ -150,6 +151,23 @@ def main() -> int:
 
     before_root, after_root = Path(args.before), Path(args.after)
     before, after = load(before_root), load(after_root)
+
+    # A comparison that cannot find its input must fail, not report "no change".
+    # load() globs */audit.csv and returns {} for a directory that is missing,
+    # empty, or holds no completed corpus - and every downstream metric then
+    # reads n/a while the run exits 0. That is a check reassuring its caller
+    # about work it never looked at, which is the failure mode this tool exists
+    # to catch in the audit itself.
+    for label, root, rows in (("before", before_root, before),
+                              ("after", after_root, after)):
+        if not root.is_dir():
+            print(f"{label} run directory does not exist: {root}", file=sys.stderr)
+            return 2
+
+        if not rows:
+            print(f"{label} run directory contains no */audit.csv: {root}",
+                  file=sys.stderr)
+            return 2
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
 
