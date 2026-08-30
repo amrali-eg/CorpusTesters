@@ -357,6 +357,38 @@ def check_v390_instrument(c: Checker) -> None:
     c.expect("an unchanged distribution raises no alarm",
              audit_compare.distribution_shifts(before_rows, before_rows, 0.01), [])
 
+    # A comparison given input it cannot find reported "no change" and exited 0.
+    # Proved by running the real entry point, not by inspecting a helper: the
+    # defect was in main()'s handling of an empty load, so a control that called
+    # distribution_shifts directly would have passed while the tool stayed broken.
+    import subprocess
+    import tempfile
+    import sys as _sys
+
+    compare_script = (Path(__file__).resolve().parent.parent
+                      / "audit" / "tools" / "compare.py")
+    with tempfile.TemporaryDirectory() as tmp:
+        empty = Path(tmp) / "empty-run"
+        empty.mkdir()
+        out = Path(tmp) / "out"
+
+        missing = subprocess.run(
+            [_sys.executable, str(compare_script),
+             str(Path(tmp) / "absent-a"), str(Path(tmp) / "absent-b"),
+             "--out", str(out)],
+            capture_output=True, text=True)
+
+        c.expect("a comparison of directories that do not exist fails",
+                 missing.returncode, 2)
+
+        no_corpora = subprocess.run(
+            [_sys.executable, str(compare_script),
+             str(empty), str(empty), "--out", str(out)],
+            capture_output=True, text=True)
+
+        c.expect("a comparison of a run directory holding no audit.csv fails",
+                 no_corpora.returncode, 2)
+
     c.report("new v3.9 instrument decisions have explicit negative controls")
 
 
