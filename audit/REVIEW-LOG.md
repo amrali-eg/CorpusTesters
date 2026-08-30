@@ -644,6 +644,51 @@ tests a layer below the defect proves nothing about the layer that ships.
 
 ---
 
+## Tooling near-miss — `gh` resolved to the wrong repository
+
+**2026-08-31, tooling.** Asked to merge CorpusTesters PR #3, the first command
+of the turn was `gh pr checks 3`, which answered:
+
+```text
+no checks reported on the 'appveyor' branch
+```
+
+CorpusTesters PR #3 is `docs/audit-controls -> main`. The `appveyor` branch
+belongs to **EncodingChecker**, whose PR #3 is a different pull request that
+happens to share the number. `gh` infers its repository from the working
+directory, and the shell's working directory resets at the start of every turn
+to a path inside the EncodingChecker checkout — so the command was correctly
+answering a question about a repository nobody had asked about.
+
+**What was actually at risk here: nothing.** EncodingChecker PR #3 was merged on
+2020-10-01, so `gh pr merge 3` would have refused it. That is worth stating
+plainly rather than dressing the incident up as a narrowly averted disaster.
+
+**What is worth recording is why it was harmless.** The protection was that the
+colliding number pointed at an already-merged PR. Nothing checked that the
+command and the intent referred to the same repository. Had EncodingChecker
+carried an *open* PR #3, the merge would have proceeded, reported success, and
+been indistinguishable in the output from the merge that was wanted: `gh` names
+the PR title and branch in its result, never the repository it resolved.
+
+What exposed it was an anomalous branch name inside an error message — an
+accident of this particular collision, not a control. A wrong-repo command whose
+target looked ordinary would have produced ordinary-looking output.
+
+**Same family as commit `0c7120f`,** recorded above, where `git add -A` swept in
+another author's in-flight files. Both are commands that act on ambient state —
+the working directory, the index — rather than on what the caller named, and
+both produce confident output that does not disclose the state they used.
+
+**Practice.** `cd` explicitly in the same command as any `gh` invocation that
+merges, closes, or comments, and confirm `git remote get-url origin` before a
+merge. Neither is a control in the sense this log uses the word; they are habits.
+The control-shaped version — refusing to act when the resolved repository is not
+the one named in the request — does not exist here, and this entry is the record
+that it was a coincidence, not a check, that stood in for it.
+
+---
+
 ## Reproducing any claim in this log
 
 ```bash
