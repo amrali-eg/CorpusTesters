@@ -121,7 +121,17 @@ class AuditRow:
     ReferenceCodePage: str = ""
     DetectedEncoding: str = ""
     DetectedCodePage: str = ""
+    # What EC reported, which is the BOM state *relative to the source encoding
+    # EC used* - not a claim about the file. Under -From utf-16 a file starting
+    # FE FF is reported NoBOM, correctly, because that is not a UTF-16LE
+    # preamble. Use OriginalBOM to ask what the file actually begins with.
     DetectedBOM: str = ""
+
+    # Read from the original bytes by this audit, independent of EC.
+    OriginalBOM: str = ""
+
+    # The specific signature found, e.g. "UTF-16BE", or "" when there is none.
+    OriginalBOMKind: str = ""
     DetectionMatch: str = ""
     DetectionBasis: str = ""
     DetectionLabelExact: str = ""
@@ -1170,6 +1180,10 @@ def audit_corpus(args, out_dir: Path) -> tuple[list[AuditRow], dict, dict]:
 
         row.ByteIdentical = str(original_bytes == current)
 
+        bom_kind = detect_bom(original_bytes)
+        row.OriginalBOMKind = bom_kind
+        row.OriginalBOM = "BOM" if bom_kind else "NoBOM"
+
         for candidate in net_name_candidates(inv.ReferenceEncodingDeclared,
                                              inv.ReferenceEncoding):
             probe = strictness.get(candidate)
@@ -1543,6 +1557,30 @@ def coverage_rows(rows: list[AuditRow]) -> list[tuple[str, int]]:
     ]
 
 
+# Longest first: the UTF-32LE signature starts with the UTF-16LE one.
+_BOM_SIGNATURES = (
+    (b"\x00\x00\xfe\xff", "UTF-32BE"),
+    (b"\xff\xfe\x00\x00", "UTF-32LE"),
+    (b"\xef\xbb\xbf", "UTF-8"),
+    (b"\xfe\xff", "UTF-16BE"),
+    (b"\xff\xfe", "UTF-16LE"),
+)
+
+
+def detect_bom(data: bytes) -> str:
+    """The BOM the file actually begins with, or "" for none.
+
+    Asked of the bytes rather than of EC. EC reports the BOM state relative to
+    whichever source encoding it was told to use, so under an explicit -From it
+    can correctly answer "no BOM" about a file that plainly starts with one.
+    That answer is right for EC's question and wrong for this one.
+    """
+    for signature, name in _BOM_SIGNATURES:
+        if data.startswith(signature):
+            return name
+    return ""
+
+
 def reconcile(rows: list[AuditRow]) -> tuple[dict, list[str]]:
     """Section 21. Counts must add up exactly, or the audit says so."""
     status = Counter(r.ConversionStatus for r in rows)
@@ -1844,10 +1882,14 @@ def write_summary_md(rows: list[AuditRow], strictness: dict, recon: dict,
         add("")
 
     # ---- BOM policy ----------------------------------------------------
+    # Scored against OriginalBOM, read from the bytes, rather than against what
+    # EC reported: EC's answer is relative to the source encoding it was given,
+    # so under an explicit -From it disagrees with the file for a good reason
+    # and would be counted here as a BOM error that did not happen.
     bom_rows = [r for r in rows if r.ReferenceBOM in ("BOM", "NoBOM")
-                and r.DetectedBOM in ("BOM", "NoBOM")]
+                and r.OriginalBOM in ("BOM", "NoBOM")]
     if bom_rows:
-        bom_ok = sum(1 for r in bom_rows if r.ReferenceBOM == r.DetectedBOM)
+        bom_ok = sum(1 for r in bom_rows if r.ReferenceBOM == r.OriginalBOM)
         add("## BOM policy")
         add("")
         add("Reported separately from text preservation, because they are")
