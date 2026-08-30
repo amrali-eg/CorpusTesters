@@ -6,6 +6,11 @@ merely a different way of failing. Aggregates alone cannot do this: a run whose
 totals are unchanged can still have moved files in both directions.
 
     python tools/compare.py runs/baseline runs/fixed [--out reports]
+
+By default, a category whose share of the common file population moves by one
+percentage point or more raises an alarm and exits 2. This is deliberately a
+review gate, not a claim that the newer run is wrong. Use
+--allow-distribution-shift only after explaining an expected movement.
 """
 from __future__ import annotations
 
@@ -23,10 +28,13 @@ SEVERITY = {
     "OutOfScope": 1,
     "NoReferenceEncoding": 1,
     "UnknownReferenceEncoding": 1,
+    "ECCodecUnsupported": 1,
     "MetadataConflict": 1,
+    "CorpusByteOrderMislabel": 1,
     # Refusing to convert loses nothing; it is strictly safer than converting
     # to the wrong thing.
     "UnknownEncoding": 2,
+    "RefusedByPolicy": 2,
     "DecodeError": 3,
     "EncodeError": 3,
     "WriteError": 3,
@@ -41,6 +49,7 @@ SEVERITY = {
     "MissingBackup": 8,
     "MissingConvertedFile": 8,
     "AuditInfrastructureFailure": 8,
+    "CorpusRoundTripFailure": 8,
 }
 
 METRIC_KEYS = ["DetectionAccuracy", "StrictDecoding", "CodecConformance",
@@ -57,8 +66,11 @@ def load(run_root: Path) -> dict[tuple[str, str], dict]:
 
 
 def metrics(rows: list[dict]) -> dict[str, tuple[int, int]]:
-    unscored = {"OutOfScope", "NoReferenceEncoding", "UnknownReferenceEncoding",
-                "MetadataConflict"}
+    unscored = {
+        "OutOfScope", "NoReferenceEncoding", "UnknownReferenceEncoding",
+        "ECCodecUnsupported", "MetadataConflict", "CorpusByteOrderMislabel",
+        "RefusedByPolicy",
+    }
     scored = [r for r in rows if r["FailureCategory"] not in unscored]
 
     detected = [r for r in scored if r["DetectionMatch"] in ("True", "False")]
@@ -83,11 +95,57 @@ def pct(pair: tuple[int, int]) -> str:
     return f"{good}/{total} ({100 * good / total:.2f}%)" if total else "n/a"
 
 
+def distribution_shifts(
+        before: dict[tuple[str, str], dict],
+        after: dict[tuple[str, str], dict],
+        threshold: float) -> list[dict]:
+    """Category movements over files present in both runs.
+
+    Reconciliation proves that every file has a category. This separately asks
+    whether many files moved to another category, which is the signal a complete
+    but wrong classifier can otherwise hide.
+    """
+    if not 0 <= threshold <= 1:
+        raise ValueError("distribution threshold must be between 0 and 1")
+
+    common = sorted(set(before) & set(after))
+    if not common:
+        return []
+
+    before_counts = Counter(before[key]["FailureCategory"] for key in common)
+    after_counts = Counter(after[key]["FailureCategory"] for key in common)
+    total = len(common)
+    shifts: list[dict] = []
+
+    for category in sorted(set(before_counts) | set(after_counts)):
+        old, new = before_counts[category], after_counts[category]
+        delta = new - old
+        if delta == 0:
+            continue
+        share_delta = delta / total
+        shifts.append({
+            "Category": category,
+            "Before": old,
+            "After": new,
+            "Delta": delta,
+            "ShareDelta": share_delta,
+            "Alarm": abs(share_delta) >= threshold,
+        })
+
+    return shifts
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("before")
     parser.add_argument("after")
     parser.add_argument("--out", default="reports")
+    parser.add_argument(
+        "--distribution-threshold", type=float, default=0.01,
+        help="alarm when a category moves by this share of common files (default: 0.01)")
+    parser.add_argument(
+        "--allow-distribution-shift", action="store_true",
+        help="report material category movement without returning exit code 2")
     args = parser.parse_args()
 
     before_root, after_root = Path(args.before), Path(args.after)
@@ -137,10 +195,28 @@ def main() -> int:
 
     m_before = metrics(list(before.values()))
     m_after = metrics(list(after.values()))
+    shifts = distribution_shifts(before, after, args.distribution_threshold)
+    material_shifts = [shift for shift in shifts if shift["Alarm"]]
 
     lines: list[str] = []
     add = lines.append
     add(f"# EC conversion audit — {before_root.name} vs {after_root.name}")
+    add("")
+
+    add("## Outcome-distribution movement")
+    add("")
+    add(f"Alarm threshold: {100 * args.distribution_threshold:.2f} percentage points "
+        "of files present in both runs.")
+    add("")
+    if not shifts:
+        add("No category count changed.")
+    else:
+        add("| Category | Before | After | Delta | Share delta | Alarm |")
+        add("|---|---:|---:|---:|---:|---|")
+        for shift in sorted(shifts, key=lambda item: -abs(item["ShareDelta"])):
+            add(f"| {shift['Category']} | {shift['Before']} | {shift['After']} "
+                f"| {shift['Delta']:+d} | {100 * shift['ShareDelta']:+.2f} pp "
+                f"| {'YES' if shift['Alarm'] else 'no'} |")
     add("")
     add(f"- Files in both runs: {len(set(before) & set(after))}")
     add(f"- Outcome changed: {len(changes)}")
@@ -208,14 +284,21 @@ def main() -> int:
         "changed": len(changes),
         "direction": dict(direction),
         "transitions": {f"{b}->{a}": n for (b, a), n in transitions.items()},
+        "distributionThreshold": args.distribution_threshold,
+        "distributionShifts": shifts,
     }, indent=2), encoding="utf-8")
 
     print(f"changed={len(changes)} improved={direction['Improved']} "
           f"regressed={direction['Regressed']} lateral={direction['Lateral']}")
     for key in METRIC_KEYS:
         print(f"  {key:<20} {pct(m_before[key]):>22}  ->  {pct(m_after[key])}")
+    if material_shifts:
+        print("\nDISTRIBUTION ALARM:")
+        for shift in material_shifts:
+            print(f"  {shift['Category']}: {shift['Before']} -> {shift['After']} "
+                  f"({100 * shift['ShareDelta']:+.2f} pp)")
     print(f"\nwrote {csv_path} and {out_dir / 'before-after-summary.md'}")
-    return 0
+    return 2 if material_shifts and not args.allow_distribution_shift else 0
 
 
 if __name__ == "__main__":

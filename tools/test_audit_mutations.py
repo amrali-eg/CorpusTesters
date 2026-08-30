@@ -16,10 +16,14 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "audit"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "audit" / "tools"))
 
 import audit  # noqa: E402
+import compare as audit_compare  # noqa: E402
 
 
 class Checker:
@@ -232,6 +236,130 @@ def check_edge_cases(c: Checker) -> None:
     c.report("previously mishandled edge cases behave correctly")
 
 
+# ---------------------------------------------------------------------------
+# Controls for the v3.9 audit instrument
+#
+# These functions were added after the original mutation suite and initially
+# had no negative controls. They decide BOM reporting, EC codec availability,
+# operational coverage, batching, and whether a result is scored at all.
+# ---------------------------------------------------------------------------
+
+def check_v390_instrument(c: Checker) -> None:
+    c.section("v3.9 audit-instrument controls")
+
+    bom_cases = [
+        (b"\x00\x00\xfe\xffx", "UTF-32BE"),
+        (b"\xff\xfe\x00\x00x", "UTF-32LE"),
+        (b"\xef\xbb\xbfx", "UTF-8"),
+        (b"\xfe\xffx", "UTF-16BE"),
+        (b"\xff\xfex", "UTF-16LE"),
+        (b"plain", ""),
+        (b"x\xef\xbb\xbf", ""),
+    ]
+    for data, wanted in bom_cases:
+        c.expect(f"BOM {data[:4].hex()} -> {wanted or 'none'}",
+                 audit.detect_bom(data), wanted)
+
+    unaided = {
+        "ascii": True, "UTF_8": True, "utf-16-be": True,
+        "utf-32le": True, "windows-1252": False, "shift_jis": False,
+        "utf-7": False,
+    }
+    for codec, wanted in unaided.items():
+        c.expect(f"unaided policy for {codec}",
+                 audit._ec_converts_unaided(codec), wanted)
+
+    rows = [
+        audit.AuditRow(ConversionStatus="Converted", ByteIdentical="False"),
+        audit.AuditRow(ConversionStatus="Converted", ByteIdentical="True"),
+        audit.AuditRow(ConversionStatus="Unchanged"),
+        audit.AuditRow(ConversionStatus="Skipped"),
+        audit.AuditRow(ConversionStatus="Refused"),
+        audit.AuditRow(ConversionStatus="Error"),
+        audit.AuditRow(ConversionStatus="MissingConvertedFile"),
+    ]
+    coverage = dict(audit.coverage_rows(rows))
+    c.expect("coverage rows account for every terminal status",
+             sum(coverage.values()), len(rows))
+    c.expect("rewritten and byte-identical conversions stay separate",
+             (coverage["Converted — bytes rewritten"],
+              coverage["Converted — bytes already identical"]), (1, 1))
+
+    old_budget = audit.INCLUDE_BATCH_BUDGET
+    try:
+        audit.INCLUDE_BATCH_BUDGET = 40
+        relatives = ["alpha.txt", "beta.txt", "gamma.txt", "delta.txt"]
+        batches = list(audit._batch_includes(relatives))
+    finally:
+        audit.INCLUDE_BATCH_BUDGET = old_budget
+    c.expect("batching preserves every path exactly once and in order",
+             [item for batch in batches for item in batch], relatives)
+    c.expect("small command budget forces more than one batch",
+             len(batches) > 1, True)
+    c.expect("every multi-item batch remains inside its budget",
+             all(sum(len(item) + 12 for item in batch) <= 40
+                 for batch in batches if len(batch) > 1), True)
+
+    original_cache = dict(audit._EC_CODEC_CACHE)
+    calls: list[str] = []
+
+    def fake_run(command, **_kwargs):
+        candidate = command[command.index("-From") + 1]
+        calls.append(candidate)
+        accepted = {"shift_jis", "ks_c_5601-1987"}
+        return SimpleNamespace(
+            returncode=0 if candidate in accepted else 1,
+            stdout="", stderr="")
+
+    try:
+        audit._EC_CODEC_CACHE.clear()
+        with patch.object(audit.subprocess, "run", side_effect=fake_run):
+            c.expect("cp932 resolves only after EC positively accepts shift_jis",
+                     audit.resolve_ec_codec("cp932", Path("probe")), "shift_jis")
+            c.expect("cp949 resolves through EC's constructible canonical label",
+                     audit.resolve_ec_codec("cp949", Path("probe")),
+                     "ks_c_5601-1987")
+            c.expect("absence of acceptance never makes UTF-7 supported",
+                     audit.resolve_ec_codec("utf-7", Path("probe")), None)
+            before = len(calls)
+            audit.resolve_ec_codec("cp932", Path("different-probe"))
+            c.expect("codec resolution cache avoids a second probe",
+                     len(calls), before)
+    finally:
+        audit._EC_CODEC_CACHE.clear()
+        audit._EC_CODEC_CACHE.update(original_cache)
+
+    for text_identical in ("True", "False"):
+        unsupported = audit.AuditRow(
+            ReferenceMetadataSource="Manifest",
+            ReferenceEncoding="utf-7",
+            ECSourceUnsupported="True",
+            ConversionStatus="Converted",
+            TextIdentical=text_identical,
+            ByteIdentical="False")
+        c.expect(f"unsupported EC codec stays unscored when text={text_identical}",
+                 audit.classify(unsupported), "ECCodecUnsupported")
+
+    before_rows = {
+        ("corpus", f"{index}.txt"): {"FailureCategory": "PASS"}
+        for index in range(1500)
+    }
+    after_rows = {key: dict(value) for key, value in before_rows.items()}
+    for key in list(after_rows)[:1344]:
+        after_rows[key]["FailureCategory"] = "ECCodecUnsupported"
+
+    shifts = audit_compare.distribution_shifts(before_rows, after_rows, 0.01)
+    by_category = {shift["Category"]: shift for shift in shifts}
+    c.expect("1,344-file PASS movement is measured",
+             by_category["PASS"]["Delta"], -1344)
+    c.expect("1,344-file unsupported movement raises an alarm",
+             by_category["ECCodecUnsupported"]["Alarm"], True)
+    c.expect("an unchanged distribution raises no alarm",
+             audit_compare.distribution_shifts(before_rows, before_rows, 0.01), [])
+
+    c.report("new v3.9 instrument decisions have explicit negative controls")
+
+
 def main() -> int:
     c = Checker()
 
@@ -239,6 +367,7 @@ def main() -> int:
     check_mutations(c)
     check_corruption(c)
     check_edge_cases(c)
+    check_v390_instrument(c)
 
     print()
     if c.failures:
