@@ -283,22 +283,40 @@ worth considering on its own merits, but not the default flip.
 
 ---
 
-## EC product work — not started
+## EC product safety work — implemented in the current release cycle
 
-§17 (hard refusal conditions rather than a confidence threshold), §18 (ambiguous
-single-byte codecs), §21/§34 (self-describing backup metadata carrying the
-canonical code page, not just the codec name), §23 (dry-run diff), §25 (preflight
-safety gate), §26 (refuse rather than best-effort), §27 (risk-showing
-confirmation), §32 (conversion journal), §33 (batch-transactional install).
+The review's core product-safety direction has been implemented without adding a
+numeric confidence gate or a large second detector:
 
-These belong in their own release cycle. §18 is the one that would eliminate the
-largest real risk class measured — 419 of 2,021 rewritten legacy files came out
-with different text, and single-byte code pages are mutually decodable, so
-nothing in the bytes distinguishes them.
+- **Fail-closed conversion (§17, §25, §26).** EC uses strict source decoding,
+  strict target encoding, independent strict target decoding, exact text
+  verification, verified backup creation, and atomic installation. A failure at
+  any point leaves the source untouched.
+- **Ambiguity handling (§18).** Automatic conversion is limited to Unicode and
+  ASCII. A legacy source that is not safely identified is refused; `-From` and
+  the GUI's explicit-source selection resolve that ambiguity without bypassing
+  strict decoding, verification, or backup checks. Same-text alternatives are
+  disclosed rather than refused.
+- **Self-describing recovery metadata (§21/§34).** Each successful backed-up
+  conversion writes and read-backs a versioned `.ecmeta.json` sidecar before
+  installation. It records the source codec actually used, whether it was
+  detected or explicit, any detector result retained as provenance, canonical
+  code-page identities, hashes, BOM policy, target, timestamp, and conversion
+  identifier. It does not claim that EC has a restore command; it makes a later
+  restoration independently verifiable.
+- **Bound preflight plans and risk-aware confirmation (§23, §27).** `-Plan`
+  records the input hashes and conversion semantics. `-Apply` and the GUI use
+  the approved actions without re-detecting; a changed or missing input invalidates
+  the entire planned run before writing. The GUI presents unambiguous,
+  same-text-ambiguous, and text-changing-ambiguous outcomes distinctly.
+- **Durable conversion journal (§32).** EC can export the decisions actually
+  executed — source mode, candidates, ambiguity class, hashes, target, backups,
+  and terminal status — as UTF-8 JSON.
 
-§21/§34 directly closes the recovery gap the audit found: 99.2% of bad
-conversions are byte-recoverable, but only for someone who still knows which
-codec was used, and that lives solely in the conversion report.
+Not implemented by design: an in-product verified restore command, folder or
+batch restore, and whole-batch transactional installation. The narrow
+concurrent-writer window between the last hash check and replacement is also a
+documented limitation.
 
 ---
 
@@ -374,6 +392,94 @@ like one that passes.
 
 No production code was involved. The concurrent contract is correct and documented; the
 tests were not honouring it.
+
+---
+
+## Shared-detector parity — strict codec construction
+
+**2026-08-30, EncodingChecker, LineEndingNormalizer, CorpusTesters.** The
+external review correctly emphasized that strictness is a property of both the
+decoder and the encoder construction, not a fallback assignment made after a
+codec object has been created. EC had already corrected its shared
+`TextEncoding.Strict` helper to construct a codec with exception fallbacks.
+
+LEN and CorpusTesters still had one materially different edge case: if strict
+reconstruction failed, they returned the original encoding. That could silently
+restore replacement fallback behavior. Their sample validators also retained a
+post-construction `Decoder.Fallback` assignment, which is ineffective for the
+affected code-page provider encodings.
+
+**Corrected.** The shared behavior is now identical in all three repositories:
+
+```text
+construct strict codec
+    -> unavailable strict codec: reject / fail closed
+    -> strict decode failure: reject
+    -> valid sample: continue detector validation
+```
+
+The EC-only full-file conversion validator remains intentionally separate: it is
+a conversion safety feature, not part of the shared detector contract.
+
+**Verification.** The detector-parity check reports no drift for
+`UnicodeDetector.cs`, `TextValidation.cs`, or `TextEncoding.Strict`. EC's 441
+tests pass; LEN's 267 tests pass, including a new unrebuildable-codec regression;
+and the CorpusTesters Release build passes with zero warnings or errors. The
+edited files were normalized to CRLF while retaining their original UTF-8 BOM
+state.
+
+---
+
+## C1 follow-up — explicit legacy source disagreement provenance
+
+**2026-08-30, EncodingChecker.** C1 correctly refuses an explicit legacy codec
+only when it contradicts reliable Unicode evidence, using the stable reason code
+`ExplicitSourceConflictsWithDetection`. A structured legacy detection is not
+equivalent proof: the user's `-From` or GUI choice remains allowed and still
+passes through strict decoding, target encoding, text verification, backup
+verification, and atomic installation.
+
+The remaining provenance gap is now closed. Journal schema version 3 records
+both the detector result and the source codec actually used, their canonical
+code pages, and `ExplicitSourceDiffersFromDetection`. Codec aliases are compared
+by code-page identity, so equivalent labels such as `cp866` and `ibm866` do not
+create false disagreements.
+
+This is deliberately a journal signal, not a new refusal rule:
+
+```text
+reliable Unicode conflict -> refuse: ExplicitSourceConflictsWithDetection
+legacy detector differs   -> allow explicit source; record disagreement
+same canonical codec      -> allow; no disagreement
+```
+
+Verified through the CLI conversion path and an alias regression. The full EC
+Release suite passes: 443 tests, zero failures.
+
+---
+
+## Recovery hardening — unavailable source hash now fails closed
+
+**2026-08-30, EncodingChecker.** Review of the pre-install recovery boundary
+confirmed that an unavailable backup hash already refused conversion. A related
+gap remained: if EC could not re-hash the source while producing recovery
+metadata, the source hash became empty and the backup/source comparison was
+skipped.
+
+**Corrected.** Recovery metadata now requires both hashes and exact equality:
+
+```text
+source hash unavailable -> refuse; original unchanged
+backup hash unavailable -> refuse; original unchanged
+hashes differ           -> refuse; original unchanged
+hashes match            -> metadata may be written and verified
+```
+
+Recovery-record failures now use the stable error code `RecoveryRecordError`
+rather than being grouped under a target write failure. Focused tests cover an
+unavailable source hash, matching and mismatching hashes, and refusal before
+replacement when record creation fails. The full EC Release suite passes: 446
+tests, zero failures.
 
 ---
 

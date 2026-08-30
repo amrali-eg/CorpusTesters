@@ -33,6 +33,54 @@ python audit.py --corpus uts3 --source <read-only corpus> --work <copy> \
 for an audit-infrastructure failure (missing backup, failed hash, unclassified
 file), `0` otherwise.
 
+### How EC is invoked, and why it changed
+
+From EncodingChecker v3.9.0, EC converts automatically only from Unicode and
+ASCII. Legacy text is refused unless the caller names the source codec, because
+a legacy byte stream does not identify the codec that wrote it.
+
+That makes detection-only runs useless as a measure of conversion: every legacy
+file comes back `Refused` and byte-identical, so there is no output to compare.
+An audit that kept running EC unaided would report a preservation rate computed
+over the handful of Unicode files it did convert — a number that looks like
+success and measures nothing.
+
+So the audit now supplies each corpus's own reference codec through `-From`,
+grouping files so that one EC run carries one codec. The question changes
+deliberately:
+
+| Invocation | Question answered |
+|---|---|
+| default (`-From` reference codec) | When told what the bytes are, does EC preserve the text? |
+| `--no-explicit-source` | What does EC do unaided? (Answer: declines, safely.) |
+
+Both are worth running. The first is the fidelity measurement the corpora can
+actually adjudicate; the second is the operational-coverage measurement, and its
+summary says plainly that it is not measuring fidelity.
+
+EC names codecs the IANA way and Python does not, and .NET's alias table is not
+self-consistent — `cp1252` resolves, `cp1251` does not. Rather than carry a
+translation table that would rot against a .NET upgrade, `resolve_ec_codec`
+asks EC itself once per codec and caches the answer. Reference codecs EC accepts
+under no spelling are reported in the summary and fall back to detection alone.
+
+## Why the constraint model is still here
+
+`constraint_on`, `CONSTRAINT_FLOOR` and `is_structure_bearing` measure, per
+file, how tightly a codec constrains those particular bytes. EC used to carry an
+equivalent model and no longer does — v3.9.0 replaced it with a fixed rule
+(Unicode and ASCII convert automatically; everything else needs an explicit
+source).
+
+This is not drift left behind by that change, and it should not be deleted to
+"catch up" with EC. It is now the audit's most useful independent contribution:
+EC's rule treats every legacy encoding alike, and the open question is whether
+that is too broad — whether a structurally constrained codec such as ISO-2022-JP
+or GB18030 carries enough evidence to convert automatically, where a single-byte
+code page plainly does not. The constraint measurement is the evidence base for
+answering that, and it only has weight because it is computed independently of
+EC.
+
 ## Safety invariants
 
 These are enforced by the harness, not left to discipline:

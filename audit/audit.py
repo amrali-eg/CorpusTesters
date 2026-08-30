@@ -143,6 +143,11 @@ class AuditRow:
     ConversionErrorType: str = ""
     ConversionErrorMessage: str = ""
 
+    # EC's stable machine-readable reason for a non-success outcome, and the
+    # source codec this audit supplied through -From (empty when EC detected).
+    ECReasonCode: str = ""
+    ECExplicitSource: str = ""
+
     OriginalByteLength: int = 0
     BackupByteLength: int = 0
     ConvertedByteLength: int = 0
@@ -528,22 +533,163 @@ def build_inventory(corpus: str, work: Path, resolver: ReferenceResolver) -> lis
     return rows
 
 
-def run_conversion(work: Path, target: str, report: Path) -> dict[str, dict[str, str]]:
-    """Run EC exactly as shipped, with backups, and read its report."""
-    proc = subprocess.run(
-        [str(EC_EXE), "-BasePath", str(work), "-Include", "*",
-         "-Target", target, "-Backup", "-Report", str(report), "-Quiet"],
-        capture_output=True, text=True)
+# EC names codecs the IANA way; Python's canonical names often differ, and
+# .NET's alias table is not self-consistent - "cp1252" resolves, "cp1251" does
+# not. A hard-coded translation table would rot silently against a .NET upgrade,
+# so ask EC itself once per codec and cache the answer.
+_EC_CODEC_CACHE: dict[str, str | None] = {}
 
-    if not report.is_file():
-        raise RuntimeError(
-            f"EC produced no report (exit {proc.returncode}): {proc.stderr[:400]}")
+
+def _ec_codec_candidates(name: str) -> list[str]:
+    """Plausible EC spellings of a Python canonical codec name, best first."""
+    candidates = [name, name.replace("_", "-")]
+
+    page = re.fullmatch(r"cp(\d+)", name)
+    if page:
+        number = int(page.group(1))
+        if 1250 <= number <= 1258:
+            candidates.append(f"windows-{number}")
+        candidates.append(f"ibm{number}")
+
+    part = re.fullmatch(r"iso8859-(\d+)", name)
+    if part:
+        candidates.append(f"iso-8859-{part.group(1)}")
+
+    if name.startswith("mac_"):
+        candidates.append("x-mac-" + name[4:])
+
+    ordered: list[str] = []
+    for candidate in candidates:
+        if candidate and candidate not in ordered:
+            ordered.append(candidate)
+    return ordered
+
+
+def resolve_ec_codec(name: str, probe_dir: Path) -> str | None:
+    """The spelling EC accepts for this codec, or None if it accepts none."""
+    if name in _EC_CODEC_CACHE:
+        return _EC_CODEC_CACHE[name]
+
+    resolved: str | None = None
+    for candidate in _ec_codec_candidates(name):
+        proc = subprocess.run(
+            [str(EC_EXE), "-BasePath", str(probe_dir), "-Target", "utf-8",
+             "-From", candidate, "-Quiet"],
+            capture_output=True, text=True)
+
+        if "not a recognized encoding" not in (proc.stdout + proc.stderr):
+            resolved = candidate
+            break
+
+    _EC_CODEC_CACHE[name] = resolved
+    return resolved
+
+
+# Windows caps a command line near 32 KB. Stay well inside it: exceeding it
+# would fail the batch rather than convert fewer files, so the margin is cheap.
+INCLUDE_BATCH_BUDGET = 24_000
+
+
+def _batch_includes(relatives: list[str]):
+    """Split relative paths into batches that fit one command line."""
+    batch: list[str] = []
+    size = 0
+
+    for rel in relatives:
+        cost = len(rel) + 12          # "-Include", separators, quoting
+        if batch and size + cost > INCLUDE_BATCH_BUDGET:
+            yield batch
+            batch, size = [], 0
+        batch.append(rel)
+        size += cost
+
+    if batch:
+        yield batch
+
+
+def _merge_reports(report: Path, results: dict[str, dict[str, str]]) -> None:
+    """Write one combined report at the documented path."""
+    if not results:
+        return
+
+    fields = [key for key in next(iter(results.values())) if not key.startswith("_")]
+
+    with report.open("w", encoding="utf-8-sig", newline="") as fh:
+        writer = csv.DictWriter(fh, fieldnames=fields)
+        writer.writeheader()
+        for rel in sorted(results):
+            writer.writerow({key: results[rel].get(key, "") for key in fields})
+
+
+def run_conversion(work: Path, target: str, report: Path,
+                   inventory: list[InventoryRow],
+                   explicit_source: bool = True) -> dict[str, dict[str, str]]:
+    """Convert the working copy with backups and read EC's reports.
+
+    From v3.9.0 EC converts automatically only from Unicode and ASCII; legacy
+    text is refused unless the caller names the source codec. Running detection
+    alone therefore measures nothing about conversion - every legacy file comes
+    back refused and untouched - so by default the audit supplies each corpus's
+    own reference codec through -From, grouped so one run carries one codec.
+
+    That is a deliberate change of question. Detection-only asks "what does EC
+    do unaided?", and the answer is now "declines, safely". Supplying the codec
+    asks "when told what the bytes are, does EC preserve the text?", which is
+    the property the corpora can actually adjudicate. Pass --no-explicit-source
+    to ask the first question instead.
+
+    Files whose reference codec is unknown, or which EC cannot name, are still
+    run on detection alone.
+    """
+    probe_dir = report.parent / "_ec-codec-probe"
+    probe_dir.mkdir(parents=True, exist_ok=True)
+
+    groups: dict[str, list[str]] = defaultdict(list)
+    for inv in inventory:
+        codec = inv.ReferenceEncoding if explicit_source else ""
+        groups[codec or ""].append(inv.RelativePath)
+
+    if not groups:
+        raise RuntimeError("EC was never run: the inventory is empty.")
 
     results: dict[str, dict[str, str]] = {}
-    with report.open(encoding="utf-8-sig", newline="") as fh:
-        for row in csv.DictReader(fh):
-            rel = Path(row["File"]).relative_to(work).as_posix()
-            results[rel] = row
+    part = 0
+
+    for codec in sorted(groups):
+        ec_codec = resolve_ec_codec(codec, probe_dir) if codec else None
+
+        for batch in _batch_includes(sorted(groups[codec])):
+            part += 1
+            part_report = report.with_name(
+                f"{report.stem}.{part:04d}{report.suffix}")
+
+            command = [str(EC_EXE), "-BasePath", str(work),
+                       "-Target", target, "-Backup",
+                       "-Report", str(part_report), "-Quiet"]
+
+            for rel in batch:
+                command += ["-Include", rel]
+
+            if ec_codec:
+                command += ["-From", ec_codec]
+
+            proc = subprocess.run(command, capture_output=True, text=True)
+
+            if not part_report.is_file():
+                raise RuntimeError(
+                    f"EC produced no report for "
+                    f"{codec or '(detection only)'} "
+                    f"(exit {proc.returncode}): {proc.stderr[:400]}")
+
+            with part_report.open(encoding="utf-8-sig", newline="") as fh:
+                for row in csv.DictReader(fh):
+                    rel = Path(row["File"]).relative_to(work).as_posix()
+                    # Underscore-prefixed keys are audit bookkeeping and are
+                    # stripped before the merged report is written.
+                    row["_ExplicitSource"] = ec_codec or ""
+                    results[rel] = row
+
+    _merge_reports(report, results)
     return results
 
 
@@ -806,6 +952,11 @@ def classify(row: AuditRow) -> str:
         return row.FailureCategory
     if row.ConversionStatus == "Skipped":
         return "UnknownEncoding"
+    if row.ConversionStatus == "Refused":
+        # EC declined by policy and left the file byte-identical. Nothing was
+        # converted, so there is no conversion to judge - and the text was
+        # never compared, so any verdict about fidelity here would be invented.
+        return "RefusedByPolicy"
     if row.ConversionStatus == "Error":
         stage = row.ConversionErrorStage
         return {"Decode": "DecodeError", "Encode": "EncodeError",
@@ -847,7 +998,9 @@ def audit_corpus(args, out_dir: Path) -> tuple[list[AuditRow], dict, dict]:
 
     report_csv = out_dir / "logs" / "ec-conversion-report.csv"
     report_csv.parent.mkdir(parents=True, exist_ok=True)
-    ec_results = run_conversion(work, args.target, report_csv)
+    ec_results = run_conversion(
+        work, args.target, report_csv, inventory,
+        explicit_source=not args.no_explicit_source)
 
     # PHASE 0 probes every spelling in play - baseline, what each corpus
     # declares, and what EC actually answered - so code-page identity can be
@@ -911,6 +1064,8 @@ def audit_corpus(args, out_dir: Path) -> tuple[list[AuditRow], dict, dict]:
         if ec:
             row.DetectedEncoding = ec["Encoding"]
             row.DetectedBOM = "BOM" if ec["BOM"] == "Yes" else "NoBOM"
+            row.ECReasonCode = ec.get("ReasonCode", "")
+            row.ECExplicitSource = ec.get("_ExplicitSource", "")
 
         if not path.is_file():
             row.ConversionStatus = "MissingConvertedFile"
@@ -1098,6 +1253,8 @@ def audit_corpus(args, out_dir: Path) -> tuple[list[AuditRow], dict, dict]:
         if inv.ReferenceEncodingDeclared == "Binary" and not inv.ReferenceEncoding:
             if row.ConversionStatus == "Skipped":
                 row.FailureCategory = "UnknownEncoding"
+            elif row.ConversionStatus == "Refused":
+                row.FailureCategory = "RefusedByPolicy"
             elif row.ConversionStatus == "Error":
                 row.FailureCategory = "DecodeError"
             elif row.ByteIdentical == "True":
@@ -1186,7 +1343,8 @@ def apply_forced_reference(rows: list[AuditRow], work: Path,
 # --------------------------------------------------------------------------
 
 PRIMARY_OUTCOMES = [
-    "PASS", "NoOpCorrect", "NoOpMislabeled", "Misdetection", "MappingDifference",
+    "PASS", "NoOpCorrect", "NoOpMislabeled", "RefusedByPolicy",
+    "Misdetection", "MappingDifference",
     "SilentDecodeLoss", "UnknownEncoding", "DecodeError", "EncodeError",
     "WriteError", "ReferenceDecodeError", "MetadataConflict",
     "BackupIntegrityFailure", "MissingBackup", "MissingConvertedFile",
@@ -1201,6 +1359,10 @@ PRIMARY_OUTCOMES = [
 UNSCORED_OUTCOMES = {
     "OutOfScope", "NoReferenceEncoding", "UnknownReferenceEncoding",
     "MetadataConflict", "CorpusByteOrderMislabel",
+    # EC declining to convert is a policy decision, not a conversion outcome.
+    # Scoring it as either a pass or a failure would assert something the
+    # evidence cannot support: nothing was written, and nothing was compared.
+    "RefusedByPolicy",
 }
 
 # Outcomes that indicate the audit itself, not EC, did not hold up.
@@ -1276,6 +1438,33 @@ def write_metadata_summary(rows: list[AuditRow], out_dir: Path) -> None:
             writer.writerow([declared, count, str(bool(canonical)), canonical])
 
 
+# Every file ends with exactly one ConversionStatus, so these partition a run.
+# Defined once and used by both the summary table and the reconciliation check,
+# so the two cannot drift: the pre-v3.9.0 table listed statuses by hand, and
+# when EC introduced "Refused" the table silently dropped every refused file
+# while still printing shares as though it had not.
+COVERAGE_STATUSES = ("Converted", "Unchanged", "Skipped", "Refused", "Error",
+                     "MissingConvertedFile")
+
+
+def coverage_rows(rows: list[AuditRow]) -> list[tuple[str, int]]:
+    """(label, count) per operational outcome, accounting for every file."""
+    status = Counter(r.ConversionStatus for r in rows)
+    rewritten = sum(1 for r in rows
+                    if r.ConversionStatus == "Converted"
+                    and r.ByteIdentical == "False")
+
+    return [
+        ("Converted — bytes rewritten", rewritten),
+        ("Converted — bytes already identical", status["Converted"] - rewritten),
+        ("Already in the target encoding", status["Unchanged"]),
+        ("Skipped — encoding not identified", status["Skipped"]),
+        ("Refused — EC declined to convert", status["Refused"]),
+        ("Failed — conversion attempted and errored", status["Error"]),
+        ("No converted file found", status["MissingConvertedFile"]),
+    ]
+
+
 def reconcile(rows: list[AuditRow]) -> tuple[dict, list[str]]:
     """Section 21. Counts must add up exactly, or the audit says so."""
     status = Counter(r.ConversionStatus for r in rows)
@@ -1293,6 +1482,19 @@ def reconcile(rows: list[AuditRow]) -> tuple[dict, list[str]]:
 
     if sum(outcome.values()) != total:
         problems.append("outcome counts do not sum to the file count")
+
+    # A status this audit does not model would otherwise be misfiled by
+    # classify() and vanish from the coverage table. Say so instead.
+    unmodelled = sorted({r.ConversionStatus for r in rows} - set(COVERAGE_STATUSES))
+    if unmodelled:
+        problems.append(
+            "EC reported status(es) this audit does not model: "
+            + ", ".join(unmodelled))
+
+    covered = sum(count for _, count in coverage_rows(rows))
+    if covered != total:
+        problems.append(
+            f"operational coverage accounts for {covered} of {total} files")
 
     text_diff = sum(1 for r in rows if r.TextIdentical == "False")
     causes = sum(outcome[k] for k in
@@ -1353,6 +1555,30 @@ def write_summary_md(rows: list[AuditRow], strictness: dict, recon: dict,
     scored = [r for r in rows if r.FailureCategory not in UNSCORED_OUTCOMES]
     unscored = len(rows) - len(scored)
 
+    explicit = Counter(r.ECExplicitSource for r in rows if r.ECExplicitSource)
+    unusable = sorted({r.ReferenceEncoding for r in rows
+                       if r.ReferenceEncoding and not r.ECExplicitSource})
+
+    if explicit:
+        add(f"Source encoding was supplied to EC for "
+            f"{sum(explicit.values())} of {len(rows)} file(s) using the corpus's "
+            f"own reference codec, across {len(explicit)} codec(s). EC converts "
+            f"automatically only from Unicode and ASCII, so this is what makes "
+            f"conversion fidelity measurable at all; detection accuracy below is "
+            f"still measured from what EC reported.")
+
+        if unusable:
+            add("")
+            add(f"EC accepts no spelling of {len(unusable)} reference codec(s), so "
+                f"those files were run on detection alone and will be refused "
+                f"rather than converted: {', '.join(f'`{c}`' for c in unusable)}. "
+                f"This is a gap in what the audit can measure, not an EC failure.")
+    else:
+        add("EC was run on detection alone. From v3.9.0 that refuses all legacy "
+            "text, so the metrics below describe unaided behaviour rather than "
+            "conversion fidelity.")
+    add("")
+
     add("## Four independent metrics")
     add("")
     add("Reported separately and deliberately not combined: a single accuracy")
@@ -1391,9 +1617,22 @@ def write_summary_md(rows: list[AuditRow], strictness: dict, recon: dict,
     add(f"| 3 | Codec conformance | Where EC named the right codec, does its "
         f"mapping table agree with the reference? | "
         f"{outcome['MappingDifference']} divergence(s) |")
+    # Refused files are absent from this denominator because nothing was
+    # written and nothing was compared. Left unqualified, "1/1 (100%)" over a
+    # run that converted nothing reads as success; the count of refusals beside
+    # it is what stops the ratio being mistaken for coverage.
+    # Counted over every row, not `scored`: RefusedByPolicy is deliberately
+    # unscored, so counting refusals within `scored` would always yield zero
+    # and the qualifier would never appear where it is most needed.
+    refused_files = sum(1 for r in rows if r.ConversionStatus == "Refused")
+    preservation = (f"{identical}/{compared}"
+                    f"{f' ({100 * identical / compared:.2f}%)' if compared else ''}")
+    if refused_files:
+        preservation += (f" over the files converted; {refused_files} refused "
+                         f"and not comparable")
+
     add(f"| 4 | End-to-end text preservation | Is the output the same text as the "
-        f"input? | {identical}/{compared}"
-        f"{f' ({100*identical/compared:.2f}%)' if compared else ''} |")
+        f"input? | {preservation} |")
     add("")
     if equivalent:
         substantive = len(detected) - det_ok - equivalent
@@ -1462,19 +1701,32 @@ def write_summary_md(rows: list[AuditRow], strictness: dict, recon: dict,
     add("reader deciding whether to run this tool needs both: a skipped file")
     add("carries no risk of losing text and every risk of not doing the job.")
     add("")
-    rewritten = sum(1 for r in rows
-                    if r.ConversionStatus == "Converted" and r.ByteIdentical == "False")
+    coverage = coverage_rows(rows)
     add("| Outcome | Files | Share |")
     add("|---|---:|---:|")
-    for label, count in (
-            ("Rewritten", rewritten),
-            ("Already in the target encoding", status.get("Unchanged", 0)),
-            ("Skipped — encoding not identified", status.get("Skipped", 0)),
-            ("Refused with an error", status.get("Error", 0)),
-            ("Not applicable — no reference or out of scope",
-             detection["NoReference"] + outcome.get("OutOfScope", 0))):
+    for label, count in coverage:
         add(f"| {label} | {count} | {100 * count / len(rows):.1f}% |")
+    covered = sum(count for _, count in coverage)
+    add(f"| **Total** | **{covered}** | **{100 * covered / len(rows):.1f}%** |")
     add("")
+
+    if covered != len(rows):
+        add(f"> **This table does not account for all {len(rows)} files.** "
+            f"That is a defect in this audit, not a finding about EC.")
+        add("")
+
+    refusals = Counter(r.ECReasonCode or "(none)" for r in rows
+                       if r.ConversionStatus == "Refused")
+    if refusals:
+        add("EC refuses by policy rather than failing, so refusals carry a stable")
+        add("reason code. They are reported and never scored: nothing was written,")
+        add("and nothing was compared.")
+        add("")
+        add("| Reason code | Files |")
+        add("|---|---:|")
+        for code, count in refusals.most_common():
+            add(f"| `{code}` | {count} |")
+        add("")
 
     # ---- Text-loss risk -----------------------------------------------
     add("## Text-loss risk")
@@ -1739,6 +1991,11 @@ def main() -> int:
     parser.add_argument("--label", default="baseline")
     parser.add_argument("--strict", action="store_true")
     parser.add_argument("--forced-reference", action="store_true")
+    parser.add_argument(
+        "--no-explicit-source", action="store_true",
+        help="run EC on detection alone. Since v3.9.0 that refuses all legacy "
+             "text, so it measures unaided behaviour rather than conversion "
+             "fidelity.")
     args = parser.parse_args()
 
     out_dir = Path(args.out).resolve()
