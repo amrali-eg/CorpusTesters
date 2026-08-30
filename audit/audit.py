@@ -148,6 +148,10 @@ class AuditRow:
     ECReasonCode: str = ""
     ECExplicitSource: str = ""
 
+    # "True" when the corpus's reference codec is one EC can name under no
+    # spelling, so EC was never given the chance to convert from it.
+    ECSourceUnsupported: str = ""
+
     OriginalByteLength: int = 0
     BackupByteLength: int = 0
     ConvertedByteLength: int = 0
@@ -551,6 +555,42 @@ def _ec_codec_candidates(name: str) -> list[str]:
             candidates.append(f"windows-{number}")
         candidates.append(f"ibm{number}")
 
+    # Python names several CJK codecs by code page where EC uses the charset
+    # name. Verified against EC rather than assumed: cp932 resolves under no
+    # generated spelling without these, and those files would then fall back to
+    # detection and be refused, quietly costing measurable coverage.
+    # Python spells the Unicode variants with a separator EC does not use, and
+    # names the BOM variant separately. Missing these cost 1,344 files: they were
+    # marked unmeasurable when EC supports every one of them natively.
+    DIRECT = {
+        "utf-16-le": "utf-16le", "utf-16-be": "utf-16be",
+        "utf-32-le": "utf-32le", "utf-32-be": "utf-32be",
+        "utf-8-sig": "utf-8",
+        "mac-cyrillic": "x-mac-cyrillic", "mac-roman": "macintosh",
+        "mac-latin2": "x-mac-ce", "mac-greek": "x-mac-greek",
+        "mac-turkish": "x-mac-turkish", "mac-iceland": "x-mac-icelandic",
+        "hz": "hz-gb-2312",
+    }
+    if name in DIRECT:
+        candidates.append(DIRECT[name])
+
+    BY_CODE_PAGE = {
+        "cp932": "shift_jis",
+        "cp936": "gb2312",
+        "cp949": "ks_c_5601-1987",
+        "cp950": "big5",
+        "cp874": "windows-874",
+        "cp65001": "utf-8",
+    }
+    if name in BY_CODE_PAGE:
+        candidates.append(BY_CODE_PAGE[name])
+
+    # "iso2022_jp" -> "iso-2022-jp". The plain underscore swap yields
+    # "iso2022-jp", which EC does not accept.
+    stateful = re.fullmatch(r"iso2022[-_](.+)", name)
+    if stateful:
+        candidates.append("iso-2022-" + stateful.group(1).replace("_", "-"))
+
     part = re.fullmatch(r"iso8859-(\d+)", name)
     if part:
         candidates.append(f"iso-8859-{part.group(1)}")
@@ -565,6 +605,17 @@ def _ec_codec_candidates(name: str) -> list[str]:
     return ordered
 
 
+# EC converts these automatically; a legacy source is what needs naming.
+_UNAIDED = {"ascii", "us-ascii", "utf-8", "utf-8-sig",
+            "utf-16", "utf-16-le", "utf-16-be", "utf-16le", "utf-16be",
+            "utf-32", "utf-32-le", "utf-32-be", "utf-32le", "utf-32be"}
+
+
+def _ec_converts_unaided(codec: str) -> bool:
+    """Whether EC converts from this codec without being told the source."""
+    return codec.lower().replace("_", "-") in _UNAIDED
+
+
 def resolve_ec_codec(name: str, probe_dir: Path) -> str | None:
     """The spelling EC accepts for this codec, or None if it accepts none."""
     if name in _EC_CODEC_CACHE:
@@ -577,7 +628,11 @@ def resolve_ec_codec(name: str, probe_dir: Path) -> str | None:
              "-From", candidate, "-Quiet"],
             capture_output=True, text=True)
 
-        if "not a recognized encoding" not in (proc.stdout + proc.stderr):
+        # Require positive evidence, not the absence of a rejection message.
+        # EC exits 0 having processed nothing when the name is good. Anything
+        # else - a usage error, or a crash such as .NET refusing to construct
+        # UTF-7 at all - means this spelling is unusable, whatever it printed.
+        if proc.returncode == 0:
             resolved = candidate
             break
 
@@ -687,6 +742,14 @@ def run_conversion(work: Path, target: str, report: Path,
                     # Underscore-prefixed keys are audit bookkeeping and are
                     # stripped before the merged report is written.
                     row["_ExplicitSource"] = ec_codec or ""
+                    # A reference codec EC cannot name is a limit on what this
+                    # audit can ask, not a finding about EC.
+                    # Only when EC actually needed the name. EC converts
+                    # Unicode and ASCII sources unaided, so an unresolvable
+                    # spelling costs nothing there and the comparison stands.
+                    row["_SourceUnsupported"] = str(
+                        bool(codec) and explicit_source and ec_codec is None
+                        and not _ec_converts_unaided(codec))
                     results[rel] = row
 
     _merge_reports(report, results)
@@ -942,6 +1005,19 @@ def classify(row: AuditRow) -> str:
         # The corpus names a codec this audit cannot construct (euc-tw,
         # viscii). Ground truth is unavailable, so no verdict is possible.
         return "UnknownReferenceEncoding"
+    if row.ECSourceUnsupported == "True":
+        # The mirror of the case above: the codec exists here, but EC can name
+        # it under no spelling, so EC was never asked to convert from it. Since
+        # v3.9.0 EC needs the source named for legacy text; when it cannot
+        # accept the name, the file falls back to detection and the comparison
+        # measures the detector, not the conversion.
+        #
+        # Reported and never scored, in both directions. Scoring the failures
+        # would blame EC for a conversion it was never offered - 145 UTF-7
+        # files landed as NoOpMislabeled this way - and scoring the passes
+        # while excluding the failures would be the more flattering half of the
+        # same mistake.
+        return "ECCodecUnsupported"
     if row.BackupIntegrity == "Mismatch":
         return "BackupIntegrityFailure"
     if row.BackupIntegrity == "Missing":
@@ -1066,6 +1142,7 @@ def audit_corpus(args, out_dir: Path) -> tuple[list[AuditRow], dict, dict]:
             row.DetectedBOM = "BOM" if ec["BOM"] == "Yes" else "NoBOM"
             row.ECReasonCode = ec.get("ReasonCode", "")
             row.ECExplicitSource = ec.get("_ExplicitSource", "")
+            row.ECSourceUnsupported = ec.get("_SourceUnsupported", "")
 
         if not path.is_file():
             row.ConversionStatus = "MissingConvertedFile"
@@ -1348,7 +1425,7 @@ PRIMARY_OUTCOMES = [
     "SilentDecodeLoss", "UnknownEncoding", "DecodeError", "EncodeError",
     "WriteError", "ReferenceDecodeError", "MetadataConflict",
     "BackupIntegrityFailure", "MissingBackup", "MissingConvertedFile",
-    "CorpusRoundTripFailure", "UnknownReferenceEncoding",
+    "CorpusRoundTripFailure", "UnknownReferenceEncoding", "ECCodecUnsupported",
     "AuditInfrastructureFailure", "OutOfScope", "NoReferenceEncoding",
     "CorpusByteOrderMislabel",
 ]
@@ -1358,6 +1435,7 @@ PRIMARY_OUTCOMES = [
 # claim the evidence does not support.
 UNSCORED_OUTCOMES = {
     "OutOfScope", "NoReferenceEncoding", "UnknownReferenceEncoding",
+    "ECCodecUnsupported",
     "MetadataConflict", "CorpusByteOrderMislabel",
     # EC declining to convert is a policy decision, not a conversion outcome.
     # Scoring it as either a pass or a failure would assert something the
