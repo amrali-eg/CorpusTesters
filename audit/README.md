@@ -221,4 +221,66 @@ code was actually tested.
 | `ECDiag/` | .NET harness exposing EC's codec construction to the Python driver over JSON |
 
 `tools/compare.py` joins per file rather than comparing totals, because totals
-that are unchanged can still conceal files moving in both directions.
+that are unchanged can still conceal files moving in both directions. It exits
+`2` on a material distribution shift, and `2` when either run directory is
+missing or holds no `*/audit.csv` — a comparison that cannot find its input must
+fail rather than report "no change".
+
+## Controls on the instrument
+
+The audit judges everything else, so the question that matters about any number
+it reports is not whether the number looks right. It is:
+
+> What control proves this instrument could have reported the opposite result?
+
+That question has a specific history. Across the v3.9.0 hardening work, most
+findings were defects in the measurement rather than in EncodingChecker: a
+results collector that silently dropped entries under `Parallel.ForEach`; a
+smoke harness whose failure state was indistinguishable from success; a codec
+probe that read *absence of a rejection message* as acceptance, so a crash
+counted as support; and a classification rule that misfiled 1,344 files while
+every total still reconciled. Each produced an internally consistent, entirely
+false result.
+
+The controls live in the repository root `tools/`, one level up from this
+directory. Most need no corpus, which is the point — they run on every push
+rather than only when someone remembers to audit:
+
+| Control | Runs | What it would catch |
+|---|---|---|
+| `../tools/test_audit_mutations.py` | every push | 93 negative controls: deliberately broken inputs whose correct verdict is known in advance. Fails if the audit reports success for any of them |
+| `../tools/check_codec_strictness.py` | every push | The two platform facts PHASE 0 rests on. If .NET ever changes either, every classification silently changes meaning |
+| `../tools/check_codec_conformance.py` | every push | Malformed sequences constructed directly, one codec family at a time — because a corpus can only exercise the invalid bytes it happens to contain |
+| `../tools/check_detector_drift.py` | every push | The detector sources copy-pasted across three repositories have diverged |
+| `../tools/check_audit_integrity.py <run>` | after a run | Re-derives a completed run from the files on disk: coverage, one primary outcome per row, hashes recomputed from original bytes, reconciliation in both directions, and a random sample decoded independently of the audit's own code path |
+| `../tools/independent_oracle.py` | before publishing | The audit's reference decoder disagreeing with libiconv and ICU, which share no code with Python's |
+
+CI runs the first four across three jobs (`build`, `codec-strictness`,
+`detector-drift`); the codec jobs build `ECDiag` first, and `detector-drift`
+checks out all three repositories. `check_audit_integrity.py` is exercised in CI
+only as `--help`, which runs its own logic without a corpus — the full check
+needs a completed run and belongs to the release sequence, alongside
+`independent_oracle.py`.
+
+Two further controls live inside `tools/compare.py` rather than in that table,
+and both deserve their reasoning stated: each was added after an existing check
+passed while the instrument was wrong.
+
+**Reconciliation proves completeness, not correctness.** Every file having
+exactly one outcome that adds up in both directions was true throughout the
+1,344-file misclassification — the files were filed consistently and wrongly.
+`distribution_shifts` in `tools/compare.py` is the separate gate: it asks
+whether many files moved *category* between runs, over the files present in
+both, and alarms at one percentage point. A classifier that is complete but
+newly wrong moves a population; that is the signature reconciliation cannot see.
+
+**A check must be able to fail on its own input.** `compare.py` globs
+`*/audit.csv`, and a directory that was missing, empty, or held no finished
+corpus produced `{}` — every metric read `n/a` and the run exited `0`, a check
+reassuring its caller about work it never looked at. The control for it drives
+the real entry point as a subprocess rather than calling the helper, because the
+defect lived in `main()`'s handling of an empty load: a control that called
+`distribution_shifts` directly would have passed while the tool stayed broken.
+
+The general form of that second lesson is the one worth carrying: a control that
+tests a layer below the defect proves nothing about the layer that shipped.

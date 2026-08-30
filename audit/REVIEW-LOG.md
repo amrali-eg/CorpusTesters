@@ -564,6 +564,86 @@ and the cost of skipping it is a commit that misattributes someone else's work.
 
 ---
 
+## Instrument defect — codec probe read silence as support
+
+**2026-08-31, CorpusTesters.** EC names codecs the IANA way, Python does not,
+and .NET's alias table is not self-consistent. Rather than carry a translation
+table, `resolve_ec_codec` asks EC itself which spelling it accepts. The first
+version accepted a candidate when EC's output did not contain a rejection
+message.
+
+A crash prints no rejection message. When `-From utf-7` produced an unhandled
+`NotSupportedException` and exit 127, the probe read that as acceptance, passed
+`utf-7` to the real run, and aborted the entire chardet corpus. The EC defect it
+tripped over is recorded above; this entry is about the probe that could not
+tell a crash from a success.
+
+**Corrected.** The probe requires positive evidence — `returncode == 0` — not
+the absence of a string:
+
+```python
+# Require positive evidence, not the absence of a rejection message.
+if proc.returncode == 0:
+    resolved = candidate
+    break
+```
+
+---
+
+## Instrument defect — a complete classification that was wrong for 1,344 files
+
+**2026-08-31, CorpusTesters.** The `ECCodecUnsupported` outcome exists so that
+encodings EC has no codec for are excluded from fidelity scoring rather than
+counted as failures. The rule that assigned it was wrong in two independent
+ways, and together they misfiled 1,344 files.
+
+The candidate generator never produced the spellings `utf-16le`, `utf-32be` or
+`utf-8`, so files EC handles perfectly well were recorded as codecs EC cannot
+construct. Separately, the rule fired whenever a name failed to resolve — but
+from v3.9.0 EC converts Unicode and ASCII without being told the source at all,
+so for those files the name it could not resolve was one it never needed.
+
+Corrected PASS was 4,343. The buggy rule reported 2,999.
+
+**Why this belongs here.** Every integrity check passed throughout. Coverage was
+complete, each row carried exactly one primary outcome, the evidence fields
+agreed with the outcome on the same row, and reconciliation balanced in both
+directions — because the files were classified consistently, and consistently
+wrong. Reconciliation proves that every file has a category. It cannot see a
+category that is the wrong one, and nothing in the audit was asking whether a
+large population had moved.
+
+**Corrected.** Both halves: the missing spellings were added, and the outcome is
+now assigned only when EC actually needed the name, via `_ec_converts_unaided()`
+against the `DIRECT` and `BY_CODE_PAGE` maps.
+
+The general control, rather than the specific fix, is `distribution_shifts` in
+`audit/tools/compare.py`: over the files present in both runs it compares the
+category distribution and alarms when any category moves by one percentage point
+or more. A complete but newly wrong classifier moves a population, which is the
+signature reconciliation is structurally unable to report. `--allow-distribution-shift`
+suppresses it only after the movement has been explained.
+
+---
+
+## Instrument defect — a comparison that could not fail on its own input
+
+**2026-08-31, CorpusTesters.** `compare.py` loads a run by globbing
+`*/audit.csv`. A run directory that was missing, empty, or held no completed
+corpus produced an empty mapping, and the tool went on to report every metric as
+`n/a` and exit `0` — a check reassuring its caller about work it never looked at.
+
+**Corrected.** Missing directories and directories holding no `*/audit.csv` both
+exit `2`.
+
+The control drives `compare.py` as a subprocess rather than calling
+`distribution_shifts` directly. This is the part worth keeping: the defect lived
+in `main()`'s handling of an empty load, so a control that exercised the helper
+would have passed while the shipped entry point stayed broken. A control that
+tests a layer below the defect proves nothing about the layer that ships.
+
+---
+
 ## Reproducing any claim in this log
 
 ```bash
@@ -572,7 +652,20 @@ cd audit && ./run-all.sh validation
 python ../tools/check_audit_integrity.py runs/validation
 python ../tools/test_audit_mutations.py
 python ../tools/check_codec_conformance.py
+python ../tools/check_codec_strictness.py
 ```
 
-All invariants hold across 5,078 rows; 63 negative controls hold; 70 malformed
+All invariants hold across 5,078 rows; 93 negative controls hold; 70 malformed
 sequences refused across 13 codecs with 2 acknowledged permissive cases.
+
+The instrument defects recorded above are reproduced by the negative controls
+rather than by a corpus run — each has a control whose correct verdict is known
+in advance, and which fails if the defect is reintroduced. The distribution
+alarm is exercised by comparing any two runs:
+
+```bash
+python tools/compare.py runs/<before> runs/<after> --out reports
+```
+
+Exit `0` no material movement, `2` a category moved by at least one percentage
+point, `2` either run directory missing or holding no `*/audit.csv`.
