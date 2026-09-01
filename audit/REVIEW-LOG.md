@@ -689,6 +689,51 @@ that it was a coincidence, not a check, that stood in for it.
 
 ---
 
+## Instrument defect — the integrity check was never run
+
+**2026-09-02, CorpusTesters.** `check_audit_integrity.py` kept its own copy of
+which outcomes exist and which are unscored, and never learned the two added
+during the v3.9.0 work: `ECCodecUnsupported` and `RefusedByPolicy`. From that
+point it failed on every run, reporting hundreds of `unknown outcome` and `text
+was never compared` violations for files the audit deliberately does not score.
+
+The line above — *All invariants hold across 5,078 rows* — was therefore untrue
+from the moment those outcomes were introduced until this entry, and it was
+written with no date, so nothing in the log said when it had last been checked.
+
+**Nobody noticed because nobody ran it.** `audit/README.md` lists the check as
+the step to run after a run, and it was not run for v3.9.0, v3.9.2 or v3.10.0.
+Each of those releases was signed off with a documented verification step
+skipped. One invocation would have surfaced this immediately.
+
+**The audits themselves stand.** Coverage, ground truth and independent-hash
+resampling passed on every corpus throughout, including while the checker was
+failing, and those are the invariants that would catch a wrong audit:
+
+```text
+coverage             3166/3166 · 478/478 · 67/67 · 1367/1367
+independent hashes   150/150 · 150/150 · 64/64 · 150/150
+```
+
+**Corrected.** The checker imports `PRIMARY_OUTCOMES` and `UNSCORED_OUTCOMES`
+from `audit.py`, so the vocabulary cannot drift again. Two defects the stale
+names had been masking were fixed with it: the reconciliation rule demanded
+every text difference be explained by a scoring category, which an unscored
+outcome cannot do, and that same section added the offending row count to a
+score out of two and printed `-143/2`.
+
+One further correction belongs here because it was mine. The first attempt
+imported `UNSCORED` alone and broke `ReferenceDecodeError`, which the audit
+deliberately scores — a failed reference decoder is a corpus defect worth
+reporting — but which leaves no reference text to compare against. Whether a
+file is scored and whether a comparison was possible are different facts. It was
+caught only because the run still exited 1 after the fix; had it exited 0, a
+second wrong rule would have shipped inside the correction for the first.
+
+All three stored release runs now pass.
+
+---
+
 ## Reproducing any claim in this log
 
 ```bash
@@ -702,6 +747,9 @@ python ../tools/check_codec_strictness.py
 
 All invariants hold across 5,078 rows; 93 negative controls hold; 70 malformed
 sequences refused across 13 codecs with 2 acknowledged permissive cases.
+Re-established 2026-09-02 against the stored `rel390`, `rel392` and `rel3100`
+runs; see the correction below for why the integrity line was untrue before
+then.
 
 The instrument defects recorded above are reproduced by the negative controls
 rather than by a corpus run — each has a control whose correct verdict is known
