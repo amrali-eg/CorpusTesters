@@ -32,6 +32,16 @@ import sys
 from collections import Counter, defaultdict
 from pathlib import Path
 
+# Import the audit's own definitions rather than restating them. Two copies of
+# "which outcomes exist" and "which are unscored" drifted apart once already: this
+# checker never learned about ECCodecUnsupported or RefusedByPolicy, so it failed
+# on every release run with "unknown outcome" and "text was never compared" for
+# files the audit deliberately does not score. A checker that disagrees with the
+# thing it checks reports defects that are its own.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "audit"))
+
+import audit  # noqa: E402
+
 CORPUS_ROOT = Path(os.environ.get("CORPUS_ROOT", ""))
 SOURCES = {
     "uts3": "UnicodeTestSuite-v3.0",
@@ -40,15 +50,7 @@ SOURCES = {
     "utfunknown26": "UTF-unknown-2.6 tests",
 }
 
-PRIMARY_OUTCOMES = {
-    "PASS", "NoOpCorrect", "NoOpMislabeled", "Misdetection", "MappingDifference",
-    "SilentDecodeLoss", "UnknownEncoding", "DecodeError", "EncodeError",
-    "WriteError", "ReferenceDecodeError", "MetadataConflict",
-    "BackupIntegrityFailure", "MissingBackup", "MissingConvertedFile",
-    "CorpusRoundTripFailure", "UnknownReferenceEncoding",
-    "AuditInfrastructureFailure", "OutOfScope", "NoReferenceEncoding",
-    "CorpusByteOrderMislabel",
-}
+PRIMARY_OUTCOMES = set(audit.PRIMARY_OUTCOMES)
 
 # Directory names that are both a valid codec and an encoding+language pair.
 # Listed explicitly so the resolution stays a deliberate, reviewed decision:
@@ -70,9 +72,22 @@ DETECTION_OUTCOMES = {
 CONSTRAINT_FLOOR = 0.10
 
 
-UNSCORED = {
-    "OutOfScope", "NoReferenceEncoding", "UnknownReferenceEncoding",
-    "MetadataConflict", "CorpusByteOrderMislabel", "ReferenceDecodeError",
+# ReferenceDecodeError is scored by the audit: the reference decoder failing is a
+# corpus defect the run must surface, not a file it declines to judge. Track the
+# audit's set exactly so the two cannot disagree about what "unscored" means.
+UNSCORED = set(audit.UNSCORED_OUTCOMES)
+
+# Distinct from UNSCORED, which is the audit's judgement that a file must not be
+# counted in the fidelity metrics. This is the narrower fact that no comparison
+# could have happened, so demanding one is incoherent. The two overlap for most
+# outcomes and diverge on ReferenceDecodeError: the audit scores it, because a
+# reference decoder failing is a corpus defect worth reporting, but there is no
+# reference text left to compare against. Importing UNSCORED alone made this
+# checker demand a comparison that could not exist.
+NO_COMPARISON_POSSIBLE = {
+    "UnknownEncoding", "DecodeError", "EncodeError", "WriteError",
+    "MissingConvertedFile", "MissingBackup", "BackupIntegrityFailure",
+    "ReferenceDecodeError",
 }
 
 
@@ -249,9 +264,8 @@ def check_row_consistency(corpus: str, rows: list[dict], report: Report) -> None
             failures += 1
 
         # Nothing should be left uncompared without a reason.
-        if (outcome not in UNSCORED and not declared_binary and outcome not in
-                ("UnknownEncoding", "DecodeError", "EncodeError", "WriteError",
-                 "MissingConvertedFile", "MissingBackup", "BackupIntegrityFailure")
+        if (outcome not in UNSCORED and not declared_binary
+                and outcome not in NO_COMPARISON_POSSIBLE
                 and r["TextIdentical"] not in ("True", "False")):
             report.fail("comparison",
                         f"{corpus}/{path}: {outcome} but text was never compared")
@@ -360,14 +374,26 @@ def check_reconciliation(corpus: str, rows: list[dict], report: Report) -> None:
     # text-difference cause in aggregate would not reconcile.
     diff_causes = {"Misdetection", "MappingDifference", "SilentDecodeLoss",
                    "NoOpMislabeled"}
+
+    # An unscored outcome is exempt for the same reason it is unscored: the audit
+    # could not put EC in a position to be judged, so a measured difference cannot
+    # be attributed to it. ECCodecUnsupported is the case that matters - EC still
+    # converted the file using its own detection, and the text legitimately differs
+    # from a reference the audit was never able to hand it.
     unexplained = [r for r in rows
                    if r["TextIdentical"] == "False"
-                   and r["FailureCategory"] not in diff_causes]
+                   and r["FailureCategory"] not in diff_causes
+                   and r["FailureCategory"] not in UNSCORED]
     for r in unexplained[:5]:
         report.fail("reconcile",
                     f"{corpus}/{r['RelativePath']}: text differs but outcome is "
                     f"{r['FailureCategory']}, which does not explain a difference")
-    failures += len(unexplained)
+
+    # One failed invariant, however many rows show it. Adding the row count to a
+    # score out of two produced "-143/2", which reads as a broken checker rather
+    # than as a finding and buries how many invariants actually hold.
+    if unexplained:
+        failures += 1
 
     report.section(f"{corpus}: reconciliation", failures, 2)
 
