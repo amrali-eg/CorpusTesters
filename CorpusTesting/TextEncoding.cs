@@ -187,13 +187,11 @@ public static class TextEncoding
         //
         // https://github.com/CharsetDetector/UTF-unknown
         //
-        byte[] bytes = [.. buffer];
-
         DetectionResult? result;
 
         try
         {
-            result = CharsetDetector.DetectFromBytes(bytes);
+            result = CharsetDetector.DetectFromBytes(buffer);
         }
         catch (Exception)
         {
