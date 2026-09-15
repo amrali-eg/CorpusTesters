@@ -38,7 +38,7 @@ EXIT_MISSING = 2
 # Relative path of the detector sources inside each repository.
 ROOTS = {
     "EncodingChecker": Path("sources/EncodingChecker"),
-    "LineEndingNormalizer": Path("."),
+    "LineEndingNormalizer": Path("sources/LineEndingNormalizer"),
     "CorpusTesting": Path("CorpusTesting"),
 }
 
